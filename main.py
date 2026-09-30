@@ -15,6 +15,8 @@ LAB_SECRET = os.getenv("LAB_SECRET", "LAB-123456")
 
 STALE_TIMEOUT = 30
 
+PC_DEVICE_ID = "pc-main"
+
 
 # Commands that are allowed through the cloud relay.
 #
