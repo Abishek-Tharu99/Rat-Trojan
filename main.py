@@ -1,178 +1,100 @@
 import json
-import time
-from typing import Dict, Any
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-
 
 app = FastAPI()
 
-
-# ============================================================
-# CONFIG
-# ============================================================
-
 LAB_SECRET = "LAB-123456"
 
+# ---------------------------------------------------------
+# Device registry
+# ---------------------------------------------------------
 
-# ============================================================
-# DEVICE REGISTRY
-# ============================================================
+devices = {}
+connections = {}
+device_info = {}
 
-devices: Dict[str, Dict[str, Any]] = {}
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
 
-# device_id -> websocket
-connections: Dict[str, WebSocket] = {}
-
-# device_id -> device information
-device_info: Dict[str, Dict[str, Any]] = {}
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+async def send_json(websocket, data):
+    await websocket.send_text(json.dumps(data))
 
-async def send_json(
-    websocket: WebSocket,
-    data: Dict[str, Any]
+
+async def send_to_device(device_id, data):
+    websocket = connections.get(device_id)
+
+    if websocket is None:
+        return False
+
+    try:
+        await send_json(websocket, data)
+        return True
+
+    except Exception as e:
+        print(
+            f"[RENDER] Failed to send to "
+            f"{device_id}: {e}"
+        )
+
+        return False
+
+
+def register_device(
+    device_id,
+    device_type
 ):
-    await websocket.send_text(
-        json.dumps(data)
-    )
-
-
-async def notify_pcs(message: Dict[str, Any]):
-    """
-    Send an event to every connected PC agent.
-    """
-
-    dead_pcs = []
-
-    for device_id, device in connections.items():
-
-        if device.get("device_type") != "pc":
-            continue
-
-        websocket = device.get("websocket")
-
-        if websocket is None:
-            continue
-
-        try:
-            await send_json(
-                websocket,
-                message
-            )
-
-        except Exception:
-            dead_pcs.append(device_id)
-
-    for device_id in dead_pcs:
-        connections.pop(device_id, None)
-
-
-def build_device_list():
-
-    result = []
-
-    for device_id, device in devices.items():
-
-        result.append({
-            "device_id": device_id,
-            "device_type": device.get(
-                "device_type",
-                "unknown"
-            ),
-            "status": device.get(
-                "status",
-                "offline"
-            ),
-            "connected_at": device.get(
-                "connected_at"
-            ),
-            "last_seen": device.get(
-                "last_seen"
-            ),
-            "info": device_info.get(
-                device_id,
-                {}
-            )
-        })
-
-    return result
-
-
-async def register_device(
-    websocket: WebSocket,
-    device_id: str,
-    device_type: str
-):
-
-    now = time.time()
-
     devices[device_id] = {
         "device_id": device_id,
         "device_type": device_type,
-        "status": "online",
-        "connected_at": now,
-        "last_seen": now
-    }
-
-    connections[device_id] = {
-        "websocket": websocket,
-        "device_type": device_type
+        "online": True,
+        "last_seen": now_iso(),
     }
 
 
-async def mark_offline(device_id: str):
-
-    if device_id not in devices:
-        return
-
-    devices[device_id]["status"] = "offline"
-    devices[device_id]["last_seen"] = time.time()
-
-    connections.pop(
-        device_id,
-        None
-    )
+def update_last_seen(device_id):
+    if device_id in devices:
+        devices[device_id]["last_seen"] = now_iso()
+        devices[device_id]["online"] = True
 
 
-# ============================================================
-# BASIC HTTP ROUTES
-# ============================================================
+# ---------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------
 
 @app.get("/")
 async def root():
-
     return {
+        "service": "JARVIS Cloud Relay",
         "status": "online",
-        "service": "JARVIS Render Server"
+        "time": now_iso(),
     }
 
 
 @app.get("/health")
 async def health():
-
     return {
-        "status": "healthy"
+        "status": "ok",
+        "devices_online": len(connections),
     }
 
 
 @app.get("/devices")
-async def http_devices():
-
-    return JSONResponse(
-        content={
-            "devices": build_device_list()
-        }
-    )
+async def get_devices():
+    return {
+        "devices": list(devices.values())
+    }
 
 
-# ============================================================
-# WEBSOCKET
-# ============================================================
+# ---------------------------------------------------------
+# WebSocket
+# ---------------------------------------------------------
 
 @app.websocket("/ws")
 async def websocket_endpoint(
@@ -181,10 +103,18 @@ async def websocket_endpoint(
 
     await websocket.accept()
 
-    current_device_id = None
-    current_device_type = None
+    device_id = None
+    device_type = None
 
-    print("NEW WEBSOCKET CONNECTION")
+    # Metadata describing the next binary packet.
+    #
+    # This fixes the previous "unknown device"
+    # problem.
+    pending_binary_metadata = None
+
+    print(
+        "[RENDER] WebSocket connection accepted"
+    )
 
     try:
 
@@ -192,93 +122,71 @@ async def websocket_endpoint(
 
             message = await websocket.receive()
 
-            # ------------------------------------------------
+            # =================================================
             # TEXT MESSAGE
-            # ------------------------------------------------
+            # =================================================
 
-            if "text" in message:
+            if message.get("text") is not None:
 
-                raw = message["text"]
+                text = message["text"]
 
                 try:
-                    data = json.loads(raw)
+                    data = json.loads(text)
 
                 except json.JSONDecodeError:
 
-                    await send_json(
-                        websocket,
-                        {
-                            "type": "error",
-                            "message": "Invalid JSON"
-                        }
+                    print(
+                        "[RENDER] Invalid JSON"
                     )
 
                     continue
 
-                message_type = data.get("type")
+                msg_type = data.get("type")
 
-                print(
-                    f"[WS] type={message_type}"
-                )
+                # -------------------------------------------------
+                # Android / PC pairing
+                # -------------------------------------------------
 
-                # ==================================================
-                # ANDROID / PC PAIRING
-                # ==================================================
+                if msg_type == "pair_request":
 
-                if message_type == "pair_request":
+                    requested_id =data.get("device_id")
 
-                    device_id = data.get(
-                        "device_id"
-                    )
+                    requested_type =data.get("device_type")
 
-                    device_type = data.get(
-                        "device_type",
-                        "unknown"
-                    )
-
-                    secret = data.get(
-                        "secret"
-                    )
-
-                    if not device_id:
-
-                        await send_json(
-                            websocket,
-                            {
-                                "type":
-                                    "pair_response",
-                                "success": False,
-                                "message":
-                                    "Missing device_id"
-                            }
-                        )
-
-                        continue
+                    secret =data.get("secret")
 
                     if secret != LAB_SECRET:
 
                         await send_json(
                             websocket,
                             {
-                                "type":
-                                    "pair_response",
+                                "type": "pair_response",
                                 "success": False,
-                                "message":
-                                    "Invalid secret"
-                            }
+                                "error": "invalid_secret",
+                            },
                         )
 
-                        await websocket.close(
-                            code=1008
+                        continue
+
+                    if not requested_id:
+
+                        await send_json(
+                            websocket,
+                            {
+                                "type": "pair_response",
+                                "success": False,
+                                "error": "missing_device_id",
+                            },
                         )
 
-                        return
+                        continue
 
-                    current_device_id = device_id
-                    current_device_type = device_type
+                    device_id = requested_id
+                    device_type = requested_type
 
-                    await register_device(
-                        websocket,
+                    connections[device_id] = websocket
+
+                    register_device(
                         device_id,
                         device_type
                     )
@@ -286,279 +194,176 @@ async def websocket_endpoint(
                     await send_json(
                         websocket,
                         {
-                            "type":
-                                "pair_response",
+                            "type": "pair_response",
                             "success": True,
-                            "device_id":
-                                device_id,
-                            "device_type":
-                                device_type,
-                            "message":
-                                "Paired successfully"
-                        }
+                            "device_id": device_id,
+                        },
                     )
 
                     print(
-                        f"[ONLINE] "
-                        f"{device_type}: "
-                        f"{device_id}"
-                    )
-
-                    # Notify every PC
-                    await notify_pcs(
-                        {
-                            "type":
-                                "device_connected",
-                            "device_id":
-                                device_id,
-                            "device_type":
-                                device_type,
-                            "status":
-                                "online"
-                        }
+                        f"[RENDER] Paired: "
+                        f"{device_id} "
+                        f"({device_type})"
                     )
 
                     continue
 
-                # ==================================================
-                # PC REGISTRATION
-                # ==================================================
+                # -------------------------------------------------
+                # PC registration
+                # -------------------------------------------------
 
-                if message_type == "pc_register":
+                if msg_type == "pc_register":
 
-                    device_id = data.get(
-                        "device_id",
-                        "pc-main"
-                    )
-
-                    secret = data.get(
-                        "secret"
-                    )
+                    secret =data.get("secret")
 
                     if secret != LAB_SECRET:
 
                         await send_json(
                             websocket,
                             {
-                                "type":
-                                    "pc_register_response",
+                                "type": "pc_register_response",
                                 "success": False,
-                                "message":
-                                    "Invalid secret"
-                            }
+                                "error": "invalid_secret",
+                            },
                         )
 
-                        await websocket.close(
-                            code=1008
+                        continue
+
+                    device_id =data.get(
+                            "device_id",
+                            "pc-main"
                         )
 
-                        return
+                    device_type = "pc"
 
-                    current_device_id = device_id
-                    current_device_type = "pc"
+                    connections[device_id] = websocket
 
-                    await register_device(
-                        websocket,
+                    register_device(
                         device_id,
-                        "pc"
+                        device_type
                     )
 
                     await send_json(
                         websocket,
                         {
-                            "type":
-                                "pc_register_response",
+                            "type": "pc_register_response",
                             "success": True,
-                            "device_id":
-                                device_id
-                        }
-                    )
-
-                    # Give PC the current devices immediately
-                    await send_json(
-                        websocket,
-                        {
-                            "type":
-                                "devices",
-                            "devices":
-                                build_device_list()
-                        }
+                            "device_id": device_id,
+                        },
                     )
 
                     print(
-                        f"[PC ONLINE] "
-                        f"{device_id}"
+                        "[RENDER] PC registered:",
+                        device_id
                     )
 
                     continue
 
-                # ==================================================
-                # LIST DEVICES
-                # ==================================================
+                # -------------------------------------------------
+                # Everything below requires registration
+                # -------------------------------------------------
 
-                if message_type == "list_devices":
-
-                    device_list = build_device_list()
+                if device_id is None:
 
                     await send_json(
                         websocket,
                         {
-                            "type":
-                                "devices",
-                            "devices":
-                                device_list
-                        }
-                    )
-
-                    print(
-                        f"[DEVICES] "
-                        f"{len(device_list)} devices"
+                            "type": "error",
+                            "error": "not_registered",
+                        },
                     )
 
                     continue
 
-                # ==================================================
-                # HEARTBEAT
-                # ==================================================
+                update_last_seen(device_id)
 
-                if message_type == "heartbeat":
+                # -------------------------------------------------
+                # Heartbeat
+                # -------------------------------------------------
 
-                    if current_device_id:
-
-                        if current_device_id in devices:
-
-                            devices[
-                                current_device_id
-                            ]["last_seen"] = time.time()
-
-                            devices[
-                                current_device_id
-                            ]["status"] = "online"
+                if msg_type == "heartbeat":
 
                     await send_json(
                         websocket,
                         {
-                            "type":
-                                "heartbeat_ack",
-                            "timestamp":
-                                time.time()
-                        }
+                            "type": "heartbeat_ack",
+                            "timestamp": now_iso(),
+                        },
                     )
 
                     continue
 
-                # ==================================================
-                # PING
-                # ==================================================
+                # -------------------------------------------------
+                # Ping
+                # -------------------------------------------------
 
-                if message_type == "ping":
+                if msg_type == "ping":
 
                     await send_json(
                         websocket,
                         {
-                            "type": "pong"
-                        }
+                            "type": "pong",
+                            "timestamp": now_iso(),
+                        },
                     )
 
                     continue
 
-                # ==================================================
-                # DEVICE INFO
-                # ==================================================
+                # -------------------------------------------------
+                # Device information
+                # -------------------------------------------------
 
-                if message_type == "device_info":
+                if msg_type == "device_info":
 
-                    device_id = data.get(
-                        "device_id"
+                    device_info[device_id] = data.get(
+                        "info",
+                        {}
                     )
-
-                    if device_id:
-
-                        device_info[
-                            device_id
-                        ] = data.get(
-                            "data",
-                            {}
-                        )
-
-                        if device_id in devices:
-
-                            devices[
-                                device_id
-                            ]["last_seen"] = time.time()
 
                     continue
 
-                # ==================================================
-                # COMMAND RESPONSE
-                # ==================================================
+                # -------------------------------------------------
+                # Request device list
+                # -------------------------------------------------
 
-                if message_type == "command_response":
+                if msg_type == "list_devices":
 
-                    command_id = data.get(
-                        "command_id"
+                    await send_json(
+                        websocket,
+                        {
+                            "type": "devices",
+                            "devices": list(
+                                devices.values()
+                            ),
+                        },
                     )
-
-                    print(
-                        f"[COMMAND RESPONSE] "
-                        f"{command_id}"
-                    )
-
-                    # Forward Android response
-                    # to the PC.
-
-                    sender_id = current_device_id
-
-                    if sender_id:
-
-                        await notify_pcs(
-                            {
-                                "type":
-                                    "command_response",
-                                "device_id":
-                                    sender_id,
-                                "command_id":
-                                    command_id,
-                                "data":
-                                    data.get(
-                                        "data"
-                                    ),
-                                "success":
-                                    data.get(
-                                        "success",
-                                        True
-                                    )
-                            }
-                        )
 
                     continue
 
-                # ==================================================
-                # COMMAND FROM PC
-                # ==================================================
+                # -------------------------------------------------
+                # Command routing
+                # -------------------------------------------------
 
-                if message_type == "command":
+                if msg_type == "command":
 
-                    target_device_id = data.get(
-                        "device_id"
-                    )
+                    target_id =data.get("device_id")
 
-                    if not target_device_id:
+                    if not target_id:
 
                         await send_json(
                             websocket,
                             {
-                                "type":
-                                    "error",
-                                "message":
-                                    "Missing target device_id"
-                            }
+                                "type": "command_response",
+                                "success": False,
+                                "error":
+                                    "missing_device_id",
+                            },
                         )
 
                         continue
 
                     target = connections.get(
-                        target_device_id
+                        target_id
                     )
 
                     if target is None:
@@ -567,187 +372,242 @@ async def websocket_endpoint(
                             websocket,
                             {
                                 "type":
-                                    "error",
-                                "message":
-                                    "Device is offline",
+                                    "command_response",
+                                "success": False,
                                 "device_id":
-                                    target_device_id
-                            }
+                                    target_id,
+                                "error":
+                                    "device_offline",
+                            },
                         )
 
                         continue
 
-                    target_socket = target.get(
-                        "websocket"
-                    )
+                    command_message = {
+                        "type": "command",
+                        "command_id":
+                            data.get("command_id"),
+                        "command":
+                            data.get("command"),
+                        "args":
+                            data.get("args", {}),
+                    }
 
-                    if target_socket is None:
+                    try:
 
                         await send_json(
-                            websocket,
-                            {
-                                "type":
-                                    "error",
-                                "message":
-                                    "Device websocket unavailable"
-                            }
+                            target,
+                            command_message
                         )
 
-                        continue
+                    except Exception as e:
 
-                    # ------------------------------------------
-                    # Forward command
-                    # ------------------------------------------
+                        print(
+                            "[RENDER] Command "
+                            f"routing failed: {e}"
+                        )
 
-                    command = data.get(
-                        "command"
+                    continue
+
+                # -------------------------------------------------
+                # Command response
+                # -------------------------------------------------
+
+                if msg_type == "command_response":
+
+                    target_id = data.get(
+                            "target_device_id"
+                        )
+
+                    if target_id:
+
+                        await send_to_device(
+                            target_id,
+                            data
+                        )
+
+                    else:
+
+                        # If PC requested the command,
+                        # send the response back through
+                        # the command requester if supplied.
+                        requester_id =data.get(
+                                "requester_device_id"
+                            )
+
+                        if requester_id:
+
+                            await send_to_device(
+                                requester_id,
+                                data
+                            )
+
+                    continue
+
+                # -------------------------------------------------
+                # Binary metadata
+                #
+                # Android sends:
+                #
+                # {
+                #   type: "camera_frame",
+                #   device_id: "...",
+                #   ...
+                # }
+                #
+                # immediately before the JPEG binary packet.
+                # -------------------------------------------------
+
+                if msg_type in (
+                    "camera_frame",
+                    "screen_frame",
+                    "microphone_chunk",
+                ):
+
+                    pending_binary_metadata = data
+
+                    continue
+
+                # -------------------------------------------------
+                # Disconnect request
+                # -------------------------------------------------
+
+                if msg_type == "disconnect":
+
+                    break
+
+            # =================================================
+            # BINARY MESSAGE
+            # =================================================
+
+            elif message.get("bytes") is not None:
+
+                binary_data = message["bytes"]
+
+                if not pending_binary_metadata:
+
+                    print(
+                        "[RENDER] Binary packet received "
+                        "without metadata"
                     )
 
-                    command_id = data.get(
-                        "command_id"
+                    continue
+
+                metadata = pending_binary_metadata
+
+                pending_binary_metadata = None
+
+                source_device =metadata.get(
+                        "device_id",
+                        device_id
                     )
+
+                stream_type = metadata.get(
+                        "type",
+                        "unknown"
+                    )
+
+                # -------------------------------------------------
+                # Determine destination
+                # -------------------------------------------------
+
+                destination_id = metadata.get(
+                        "target_device_id",
+                        "pc-main"
+                    )
+
+                destination = connections.get(
+                        destination_id
+                    )
+
+                if destination is None:
+
+                    print(
+                        "[RENDER] Destination offline:",
+                        destination_id
+                    )
+
+                    continue
+
+                # -------------------------------------------------
+                # Forward metadata
+                # -------------------------------------------------
+
+                forward_metadata = {
+                    **metadata,
+                    "source_device_id":
+                        source_device,
+                    "size":
+                        len(binary_data),
+                    "timestamp":
+                        now_iso(),
+                }
+
+                try:
 
                     await send_json(
-                        target_socket,
-                        {
-                            "type":
-                                "command",
-                            "command_id":
-                                command_id,
-                            "command":
-                                command
-                        }
+                        destination,
+                        forward_metadata
+                    )
+
+                    await destination.send_bytes(
+                        binary_data
                     )
 
                     print(
-                        f"[COMMAND] "
-                        f"{current_device_id} "
-                        f"-> "
-                        f"{target_device_id} "
-                        f": "
-                        f"{command}"
+                        "[RENDER] Forwarded",
+                        stream_type,
+                        "from",
+                        source_device,
+                        "to",
+                        destination_id,
+                        len(binary_data),
+                        "bytes",
                     )
 
-                    continue
+                except Exception as e:
 
-                # ==================================================
-                # UNKNOWN MESSAGE
-                # ==================================================
-
-                print(
-                    "[UNKNOWN]",
-                    data
-                )
-
-            # ------------------------------------------------
-            # BINARY MESSAGE
-            # ------------------------------------------------
-
-            elif "bytes" in message:
-
-                payload = message["bytes"]
-
-                if len(payload) < 1:
-                    continue
-
-                packet_type = payload[0]
-                packet_data = payload[1:]
-
-                # Forward Android binary data to PC
-                # without interpreting the sensor data.
-
-                if current_device_id:
-
-                    dead_pcs = []
-
-                    for pc_id, pc in connections.items():
-
-                        if pc.get(
-                            "device_type"
-                        ) != "pc":
-                            continue
-
-                        pc_socket = pc.get(
-                            "websocket"
-                        )
-
-                        if pc_socket is None:
-                            continue
-
-                        try:
-
-                            # Prefix source ID as JSON
-                            # text before binary data.
-
-                            await send_json(
-                                pc_socket,
-                                {
-                                    "type":
-                                        "binary_data",
-                                    "device_id":
-                                        current_device_id,
-                                    "packet_type":
-                                        packet_type,
-                                    "size":
-                                        len(packet_data)
-                                }
-                            )
-
-                            await pc_socket.send_bytes(
-                                payload
-                            )
-
-                        except Exception:
-
-                            dead_pcs.append(
-                                pc_id
-                            )
-
-                    for pc_id in dead_pcs:
-
-                        connections.pop(
-                            pc_id,
-                            None
-                        )
+                    print(
+                        "[RENDER] Binary forwarding "
+                        f"failed: {e}"
+                    )
 
     except WebSocketDisconnect:
 
         print(
-            f"[DISCONNECT] "
-            f"{current_device_id}"
+            "[RENDER] Disconnected:",
+            device_id
         )
 
     except Exception as e:
 
         print(
-            f"[ERROR] "
-            f"{current_device_id}: "
-            f"{e}"
+            "[RENDER] WebSocket error:",
+            e
         )
 
     finally:
 
-        if current_device_id:
+        if device_id:
 
-            await mark_offline(
-                current_device_id
-            )
+            current = connections.get(device_id)
 
-            # Tell PCs that this device went offline.
-            await notify_pcs(
-                {
-                    "type":
-                        "device_disconnected",
-                    "device_id":
-                        current_device_id,
-                    "device_type":
-                        current_device_type,
-                    "status":
-                        "offline"
-                }
-            )
+            if current is websocket:
 
-            print(
-                f"[OFFLINE] "
-                f"{current_device_id}"
-            )
+                connections.pop(
+                    device_id,
+                    None
+                )
+
+            if device_id in devices:
+
+                devices[device_id]["online"] = False
+
+                devices[device_id][
+                    "last_seen"
+                ] = now_iso()
+
+        print(
+            "[RENDER] Connection cleanup:",
+            device_id
+        )
