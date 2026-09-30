@@ -1,4 +1,3 @@
-
 import asyncio
 import json
 import os
@@ -13,7 +12,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 # CONFIG
 # ============================================================
 
-LAB_SECRET = os.getenv("LAB_SECRET", "LAB-123456")
+LAB_SECRET = os.getenv(
+    "LAB_SECRET",
+    "LAB-123456",
+)
 
 PC_DEVICE_ID = "pc-main"
 
@@ -26,7 +28,7 @@ STALE_TIMEOUT = 30
 
 app = FastAPI(
     title="JARVIS Cloud Relay",
-    version="3.0.0",
+    version="3.1.0",
 )
 
 
@@ -44,16 +46,16 @@ registry_lock = asyncio.Lock()
 
 
 # ============================================================
-# BINARY METADATA
+# LOCATION REGISTRY
 # ============================================================
 
-# WebSocket sends:
-#
-#   TEXT metadata
-#   BINARY payload
-#
-# The metadata is stored until the following binary
-# packet arrives.
+# Latest known location for each device.
+locations: Dict[str, dict] = {}
+
+
+# ============================================================
+# BINARY METADATA
+# ============================================================
 
 pending_binary_metadata: Dict[str, dict] = {}
 
@@ -67,7 +69,7 @@ def now() -> float:
 
 
 # ============================================================
-# COMMAND ID
+# REQUEST ID
 # ============================================================
 
 def make_request_id() -> str:
@@ -90,7 +92,10 @@ def is_device_online(device_id: str) -> bool:
     if device is None:
         return False
 
-    last_seen = device.get("last_seen", 0)
+    last_seen = device.get(
+        "last_seen",
+        0,
+    )
 
     if now() - last_seen > STALE_TIMEOUT:
         return False
@@ -98,15 +103,22 @@ def is_device_online(device_id: str) -> bool:
     return True
 
 
-def update_device_status(device_id: str):
+def update_device_status(
+    device_id: str,
+):
 
-    device = devices.get(device_id)
+    device = devices.get(
+        device_id
+    )
 
     if device is None:
         return
 
-    if is_device_online(device_id):
+    if is_device_online(
+        device_id
+    ):
         device["status"] = "online"
+
     else:
         device["status"] = "offline"
 
@@ -123,38 +135,73 @@ async def register_device(
 
     async with registry_lock:
 
-        old_connection = connections.get(device_id)
+        old_connection = connections.get(
+            device_id
+        )
 
-        if old_connection is not None and old_connection is not websocket:
+        if (
+            old_connection is not None
+            and old_connection is not websocket
+        ):
 
             try:
                 await old_connection.close()
+
             except Exception:
                 pass
 
-        connections[device_id] = websocket
+        connections[
+            device_id
+        ] = websocket
 
-        existing = devices.get(device_id)
+        existing = devices.get(
+            device_id
+        )
 
         if existing is None:
 
-            devices[device_id] = {
-                "device_id": device_id,
-                "device_type": device_type,
-                "status": "online",
-                "connected_at": now(),
-                "last_seen": now(),
-                "info": {},
+            devices[
+                device_id
+            ] = {
+
+                "device_id":
+                    device_id,
+
+                "device_type":
+                    device_type,
+
+                "status":
+                    "online",
+
+                "connected_at":
+                    now(),
+
+                "last_seen":
+                    now(),
+
+                "info":
+                    {},
             }
 
         else:
 
-            existing["device_type"] = device_type
-            existing["status"] = "online"
-            existing["last_seen"] = now()
+            existing[
+                "device_type"
+            ] = device_type
+
+            existing[
+                "status"
+            ] = "online"
+
+            existing[
+                "last_seen"
+            ] = now()
 
         if device_id not in device_info:
-            device_info[device_id] = {}
+
+            device_info[
+                device_id
+            ] = {}
 
 
 # ============================================================
@@ -166,10 +213,9 @@ def unregister_device(
     websocket: WebSocket,
 ):
 
-    current = connections.get(device_id)
-
-    # Don't disconnect a newer connection when
-    # an older connection closes.
+    current = connections.get(
+        device_id
+    )
 
     if current is not websocket:
         return
@@ -184,27 +230,46 @@ def unregister_device(
         None,
     )
 
-    device = devices.get(device_id)
+    device = devices.get(
+        device_id
+    )
 
     if device is not None:
 
-        device["status"] = "offline"
-        device["last_seen"] = now()
+        device[
+            "status"
+        ] = "offline"
+
+        device[
+            "last_seen"
+        ] = now()
 
 
 # ============================================================
 # TOUCH DEVICE
 # ============================================================
 
-def touch_device(device_id: str):
+def touch_device(
+    device_id: str,
+):
 
-    device = devices.get(device_id)
+    if not device_id:
+        return
+
+    device = devices.get(
+        device_id
+    )
 
     if device is None:
         return
 
-    device["last_seen"] = now()
-    device["status"] = "online"
+    device[
+        "last_seen"
+    ] = now()
+
+    device[
+        "status"
+    ] = "online"
 
 
 # ============================================================
@@ -221,7 +286,9 @@ async def send_json(
 
     try:
 
-        await websocket.send_json(data)
+        await websocket.send_json(
+            data
+        )
 
         return True
 
@@ -264,17 +331,21 @@ async def send_binary(
 
 
 # ============================================================
-# GET SOCKET
+# GET DEVICE SOCKET
 # ============================================================
 
 def get_device_socket(
     device_id: str,
 ) -> Optional[WebSocket]:
 
-    if not is_device_online(device_id):
+    if not is_device_online(
+        device_id
+    ):
         return None
 
-    return connections.get(device_id)
+    return connections.get(
+        device_id
+    )
 
 
 # ============================================================
@@ -292,31 +363,43 @@ def build_device_list():
         )
 
         result.append(
+
             {
-                "device_id": device_id,
-
-                "device_type": device.get(
-                    "device_type",
-                    "unknown",
-                ),
-
-                "status": device.get(
-                    "status",
-                    "offline",
-                ),
-
-                "connected_at": device.get(
-                    "connected_at"
-                ),
-
-                "last_seen": device.get(
-                    "last_seen"
-                ),
-
-                "info": device_info.get(
+                "device_id":
                     device_id,
-                    {},
-                ),
+
+                "device_type":
+                    device.get(
+                        "device_type",
+                        "unknown",
+                    ),
+
+                "status":
+                    device.get(
+                        "status",
+                        "offline",
+                    ),
+
+                "connected_at":
+                    device.get(
+                        "connected_at"
+                    ),
+
+                "last_seen":
+                    device.get(
+                        "last_seen"
+                    ),
+
+                "info":
+                    device_info.get(
+                        device_id,
+                        {},
+                    ),
+
+                "location":
+                    locations.get(
+                        device_id
+                    ),
             }
         )
 
@@ -331,9 +414,15 @@ def build_device_list():
 async def root():
 
     return {
-        "service": "JARVIS Cloud Relay",
-        "status": "running",
-        "version": "3.0.0",
+
+        "service":
+            "JARVIS Cloud Relay",
+
+        "status":
+            "running",
+
+        "version":
+            "3.1.0",
     }
 
 
@@ -353,7 +442,9 @@ async def health():
         )
 
         if (
-            devices[device_id].get(
+            devices[
+                device_id
+            ].get(
                 "status"
             )
             == "online"
@@ -362,9 +453,15 @@ async def health():
             online += 1
 
     return {
-        "status": "healthy",
-        "devices": len(devices),
-        "online": online,
+
+        "status":
+            "healthy",
+
+        "devices":
+            len(devices),
+
+        "online":
+            online,
     }
 
 
@@ -376,7 +473,23 @@ async def health():
 async def get_devices():
 
     return {
-        "devices": build_device_list()
+
+        "devices":
+            build_device_list()
+    }
+
+
+# ============================================================
+# LOCATIONS
+# ============================================================
+
+@app.get("/locations")
+async def get_locations():
+
+    return {
+
+        "locations":
+            locations
     }
 
 
@@ -403,37 +516,51 @@ async def forward_command(
         )
 
         await send_json(
+
             source_socket,
+
             {
-                "type": "command_response",
+                "type":
+                    "command_response",
 
-                "request_id": request_id,
+                "request_id":
+                    request_id,
 
-                "success": False,
+                "success":
+                    False,
 
-                "device_id": target_device_id,
+                "device_id":
+                    target_device_id,
 
-                "error": (
-                    f"device_offline:"
-                    f"{target_device_id}"
-                ),
+                "error":
+                    (
+                        "device_offline:"
+                        f"{target_device_id}"
+                    ),
             },
         )
 
         return
 
     forwarded = {
-        "type": "command",
 
-        "request_id": request_id,
+        "type":
+            "command",
 
-        "command": command,
+        "request_id":
+            request_id,
 
-        "args": args,
+        "command":
+            command,
 
-        "device_id": target_device_id,
+        "args":
+            args,
 
-        "source_device_id": source_device_id,
+        "device_id":
+            target_device_id,
+
+        "source_device_id":
+            source_device_id,
     }
 
     sent = await send_json(
@@ -448,17 +575,24 @@ async def forward_command(
         )
 
         await send_json(
+
             source_socket,
+
             {
-                "type": "command_response",
+                "type":
+                    "command_response",
 
-                "request_id": request_id,
+                "request_id":
+                    request_id,
 
-                "success": False,
+                "success":
+                    False,
 
-                "device_id": target_device_id,
+                "device_id":
+                    target_device_id,
 
-                "error": "command_forward_failed",
+                "error":
+                    "command_forward_failed",
             },
         )
 
@@ -503,13 +637,13 @@ async def forward_media_metadata(
         metadata
     )
 
-    metadata["source_device_id"] = (
-        source_device_id
-    )
+    metadata[
+        "source_device_id"
+    ] = source_device_id
 
-    metadata["target_device_id"] = (
-        target_device_id
-    )
+    metadata[
+        "target_device_id"
+    ] = target_device_id
 
     pending_binary_metadata[
         source_device_id
@@ -559,11 +693,13 @@ async def forward_media_binary(
 
         return False
 
-    metadata["size"] = len(
-        payload
-    )
+    metadata[
+        "size"
+    ] = len(payload)
 
-    metadata["timestamp"] = now()
+    metadata[
+        "timestamp"
+    ] = now()
 
     sent_metadata = await send_json(
         target_socket,
@@ -622,12 +758,16 @@ async def websocket_endpoint(
             message = await websocket.receive()
 
             # =================================================
-            # TEXT MESSAGE
+            # TEXT
             # =================================================
 
-            if message.get("text") is not None:
+            if message.get(
+                "text"
+            ) is not None:
 
-                raw_text = message["text"]
+                raw_text = message[
+                    "text"
+                ]
 
                 try:
 
@@ -638,10 +778,15 @@ async def websocket_endpoint(
                 except json.JSONDecodeError:
 
                     await send_json(
+
                         websocket,
+
                         {
-                            "type": "error",
-                            "message": "invalid_json",
+                            "type":
+                                "error",
+
+                            "message":
+                                "invalid_json",
                         },
                     )
 
@@ -655,7 +800,10 @@ async def websocket_endpoint(
                 # ANDROID PAIR
                 # =============================================
 
-                if message_type == "pair_request":
+                if (
+                    message_type
+                    == "pair_request"
+                ):
 
                     secret = data.get(
                         "secret"
@@ -664,11 +812,18 @@ async def websocket_endpoint(
                     if secret != LAB_SECRET:
 
                         await send_json(
+
                             websocket,
+
                             {
-                                "type": "pair_response",
-                                "success": False,
-                                "message": "invalid_secret",
+                                "type":
+                                    "pair_response",
+
+                                "success":
+                                    False,
+
+                                "message":
+                                    "invalid_secret",
                             },
                         )
 
@@ -686,11 +841,18 @@ async def websocket_endpoint(
                     if not device_id:
 
                         await send_json(
+
                             websocket,
+
                             {
-                                "type": "pair_response",
-                                "success": False,
-                                "message": "missing_device_id",
+                                "type":
+                                    "pair_response",
+
+                                "success":
+                                    False,
+
+                                "message":
+                                    "missing_device_id",
                             },
                         )
 
@@ -705,23 +867,28 @@ async def websocket_endpoint(
                     )
 
                     await register_device(
+
                         device_id,
                         device_type,
                         websocket,
                     )
 
                     await send_json(
+
                         websocket,
+
                         {
-                            "type": "pair_response",
+                            "type":
+                                "pair_response",
 
-                            "success": True,
+                            "success":
+                                True,
 
-                            "device_id": device_id,
+                            "device_id":
+                                device_id,
 
-                            "message": (
-                                "Device paired successfully"
-                            ),
+                            "message":
+                                "Device paired successfully",
                         },
                     )
 
@@ -737,7 +904,10 @@ async def websocket_endpoint(
                 # PC REGISTER
                 # =============================================
 
-                if message_type == "pc_register":
+                if (
+                    message_type
+                    == "pc_register"
+                ):
 
                     secret = data.get(
                         "secret"
@@ -746,11 +916,18 @@ async def websocket_endpoint(
                     if secret != LAB_SECRET:
 
                         await send_json(
+
                             websocket,
+
                             {
-                                "type": "pc_register_response",
-                                "success": False,
-                                "message": "invalid_secret",
+                                "type":
+                                    "pc_register_response",
+
+                                "success":
+                                    False,
+
+                                "message":
+                                    "invalid_secret",
                             },
                         )
 
@@ -775,23 +952,49 @@ async def websocket_endpoint(
                     )
 
                     await register_device(
+
                         device_id,
                         device_type,
                         websocket,
                     )
 
+                    # Store PC info if supplied.
+                    info = data.get(
+                        "info",
+                        {},
+                    )
+
+                    if isinstance(
+                        info,
+                        dict,
+                    ):
+
+                        device_info[
+                            device_id
+                        ] = info
+
+                        devices[
+                            device_id
+                        ][
+                            "info"
+                        ] = info
+
                     await send_json(
+
                         websocket,
+
                         {
-                            "type": "pc_register_response",
+                            "type":
+                                "pc_register_response",
 
-                            "success": True,
+                            "success":
+                                True,
 
-                            "device_id": device_id,
+                            "device_id":
+                                device_id,
 
-                            "message": (
-                                "PC registered successfully"
-                            ),
+                            "message":
+                                "PC registered successfully",
                         },
                     )
 
@@ -809,10 +1012,15 @@ async def websocket_endpoint(
                 if current_device_id is None:
 
                     await send_json(
+
                         websocket,
+
                         {
-                            "type": "error",
-                            "message": "device_not_registered",
+                            "type":
+                                "error",
+
+                            "message":
+                                "device_not_registered",
                         },
                     )
 
@@ -830,14 +1038,21 @@ async def websocket_endpoint(
                 # HEARTBEAT
                 # =============================================
 
-                if message_type == "heartbeat":
+                if (
+                    message_type
+                    == "heartbeat"
+                ):
 
                     await send_json(
-                        websocket,
-                        {
-                            "type": "heartbeat_response",
 
-                            "timestamp": now(),
+                        websocket,
+
+                        {
+                            "type":
+                                "heartbeat_response",
+
+                            "timestamp":
+                                now(),
                         },
                     )
 
@@ -847,14 +1062,21 @@ async def websocket_endpoint(
                 # PING
                 # =============================================
 
-                if message_type == "ping":
+                if (
+                    message_type
+                    == "ping"
+                ):
 
                     await send_json(
-                        websocket,
-                        {
-                            "type": "pong",
 
-                            "timestamp": now(),
+                        websocket,
+
+                        {
+                            "type":
+                                "pong",
+
+                            "timestamp":
+                                now(),
                         },
                     )
 
@@ -864,12 +1086,18 @@ async def websocket_endpoint(
                 # LIST DEVICES
                 # =============================================
 
-                if message_type == "list_devices":
+                if (
+                    message_type
+                    == "list_devices"
+                ):
 
                     await send_json(
+
                         websocket,
+
                         {
-                            "type": "devices",
+                            "type":
+                                "devices",
 
                             "devices":
                                 build_device_list(),
@@ -882,7 +1110,10 @@ async def websocket_endpoint(
                 # DEVICE INFO
                 # =============================================
 
-                if message_type == "device_info":
+                if (
+                    message_type
+                    == "device_info"
+                ):
 
                     info = data.get(
                         "info",
@@ -898,19 +1129,27 @@ async def websocket_endpoint(
                             current_device_id
                         ] = info
 
-                        if current_device_id in devices:
+                        if (
+                            current_device_id
+                            in devices
+                        ):
 
                             devices[
                                 current_device_id
-                            ]["info"] = info
+                            ][
+                                "info"
+                            ] = info
 
                     await send_json(
+
                         websocket,
+
                         {
                             "type":
                                 "device_info_response",
 
-                            "success": True,
+                            "success":
+                                True,
 
                             "device_id":
                                 current_device_id,
@@ -926,10 +1165,124 @@ async def websocket_endpoint(
                     continue
 
                 # =============================================
+                # LOCATION
+                # =============================================
+
+                if (
+                    message_type
+                    == "location"
+                ):
+
+                    location = {
+
+                        "type":
+                            "location",
+
+                        "device_id":
+                            data.get(
+                                "device_id",
+                                current_device_id,
+                            ),
+
+                        "latitude":
+                            data.get(
+                                "latitude"
+                            ),
+
+                        "longitude":
+                            data.get(
+                                "longitude"
+                            ),
+
+                        "accuracy":
+                            data.get(
+                                "accuracy"
+                            ),
+
+                        "altitude":
+                            data.get(
+                                "altitude"
+                            ),
+
+                        "speed":
+                            data.get(
+                                "speed"
+                            ),
+
+                        "bearing":
+                            data.get(
+                                "bearing"
+                            ),
+
+                        "timestamp":
+                            data.get(
+                                "timestamp",
+                                now(),
+                            ),
+                    }
+
+                    location_device_id = (
+                        location[
+                            "device_id"
+                        ]
+                    )
+
+                    if (
+                        location_device_id
+                        is None
+                    ):
+
+                        location_device_id = (
+                            current_device_id
+                        )
+
+                        location[
+                            "device_id"
+                        ] = (
+                            current_device_id
+                        )
+
+                    locations[
+                        location_device_id
+                    ] = location
+
+                    print(
+                        "[LOCATION] "
+                        f"{location_device_id} "
+                        f"lat={location['latitude']} "
+                        f"lon={location['longitude']} "
+                        f"accuracy={location['accuracy']}"
+                    )
+
+                    # Forward location to PC.
+                    if (
+                        location_device_id
+                        != PC_DEVICE_ID
+                    ):
+
+                        pc_socket = (
+                            get_device_socket(
+                                PC_DEVICE_ID
+                            )
+                        )
+
+                        if pc_socket is not None:
+
+                            await send_json(
+                                pc_socket,
+                                location,
+                            )
+
+                    continue
+
+                # =============================================
                 # COMMAND
                 # =============================================
 
-                if message_type == "command":
+                if (
+                    message_type
+                    == "command"
+                ):
 
                     target_device_id = data.get(
                         "device_id"
@@ -948,9 +1301,6 @@ async def websocket_endpoint(
                         "request_id"
                     )
 
-                    # Support old PC clients that
-                    # still use command_id.
-
                     if not request_id:
 
                         request_id = data.get(
@@ -959,12 +1309,16 @@ async def websocket_endpoint(
 
                     if not request_id:
 
-                        request_id = make_request_id()
+                        request_id = (
+                            make_request_id()
+                        )
 
                     if not target_device_id:
 
                         await send_json(
+
                             websocket,
+
                             {
                                 "type":
                                     "command_response",
@@ -972,7 +1326,8 @@ async def websocket_endpoint(
                                 "request_id":
                                     request_id,
 
-                                "success": False,
+                                "success":
+                                    False,
 
                                 "error":
                                     "missing_device_id",
@@ -984,7 +1339,9 @@ async def websocket_endpoint(
                     if not command:
 
                         await send_json(
+
                             websocket,
+
                             {
                                 "type":
                                     "command_response",
@@ -992,7 +1349,8 @@ async def websocket_endpoint(
                                 "request_id":
                                     request_id,
 
-                                "success": False,
+                                "success":
+                                    False,
 
                                 "error":
                                     "missing_command",
@@ -1009,6 +1367,7 @@ async def websocket_endpoint(
                         args = {}
 
                     await forward_command(
+
                         source_device_id=
                             current_device_id,
 
@@ -1031,10 +1390,10 @@ async def websocket_endpoint(
                 # COMMAND RESPONSE
                 # =============================================
 
-                if message_type == "command_response":
-
-                    # Android normally sends the response
-                    # back to the device that issued it.
+                if (
+                    message_type
+                    == "command_response"
+                ):
 
                     target_device_id = data.get(
                         "target_device_id"
@@ -1077,6 +1436,7 @@ async def websocket_endpoint(
                     if target_socket is not None:
 
                         await send_json(
+
                             target_socket,
                             response,
                         )
@@ -1088,12 +1448,17 @@ async def websocket_endpoint(
                 # =============================================
 
                 if message_type in {
+
                     "camera_frame",
+
                     "screen_frame",
+
                     "microphone_chunk",
+
                 }:
 
                     await forward_media_metadata(
+
                         current_device_id,
                         data,
                     )
@@ -1105,29 +1470,39 @@ async def websocket_endpoint(
                 # =============================================
 
                 await send_json(
+
                     websocket,
+
                     {
-                        "type": "error",
+                        "type":
+                            "error",
 
                         "message":
-                            f"unknown_message_type:"
-                            f"{message_type}",
+                            (
+                                "unknown_message_type:"
+                                f"{message_type}"
+                            ),
                     },
                 )
 
             # =================================================
-            # BINARY MESSAGE
+            # BINARY
             # =================================================
 
-            elif message.get("bytes") is not None:
+            elif message.get(
+                "bytes"
+            ) is not None:
 
-                payload = message["bytes"]
+                payload = message[
+                    "bytes"
+                ]
 
                 touch_device(
                     current_device_id
                 )
 
                 await forward_media_binary(
+
                     current_device_id,
                     payload,
                 )
@@ -1152,6 +1527,7 @@ async def websocket_endpoint(
         if current_device_id:
 
             unregister_device(
+
                 current_device_id,
                 websocket,
             )
@@ -1187,7 +1563,9 @@ async def status_cleanup_loop():
 # STARTUP
 # ============================================================
 
-@app.on_event("startup")
+@app.on_event(
+    "startup"
+)
 async def startup_event():
 
     asyncio.create_task(
@@ -1231,8 +1609,12 @@ if __name__ == "__main__":
     )
 
     uvicorn.run(
+
         "main:app",
+
         host="0.0.0.0",
+
         port=port,
+
         reload=False,
     )
